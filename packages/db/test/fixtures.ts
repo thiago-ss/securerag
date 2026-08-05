@@ -6,6 +6,7 @@ export interface FixtureWorld {
   alice: { id: string };
   bob: { id: string };
   carol: { id: string };
+  dave: { id: string };
   docA: { id: string; versionId: string };
   docB: { id: string; versionId: string };
 }
@@ -28,11 +29,12 @@ export async function seedFixtures(pool: Pool): Promise<FixtureWorld> {
     `INSERT INTO securerag.principals (principal_id, provider, external_subject, display_name) VALUES
        (gen_random_uuid(), 'test-issuer', 'alice-sub', 'Alice'),
        (gen_random_uuid(), 'test-issuer', 'bob-sub', 'Bob'),
-       (gen_random_uuid(), 'test-issuer', 'carol-sub', 'Carol')
+       (gen_random_uuid(), 'test-issuer', 'carol-sub', 'Carol'),
+       (gen_random_uuid(), 'test-issuer', 'dave-sub', 'Dave')
      RETURNING principal_id`,
   );
-  const [alice, bob, carol] = principals.rows;
-  if (!alice || !bob || !carol) throw new Error('fixture principal insert failed');
+  const [alice, bob, carol, dave] = principals.rows;
+  if (!alice || !bob || !carol || !dave) throw new Error('fixture principal insert failed');
 
   await pool.query(
     `INSERT INTO securerag.tenant_memberships (tenant_id, principal_id, role) VALUES
@@ -84,6 +86,7 @@ export async function seedFixtures(pool: Pool): Promise<FixtureWorld> {
     alice: { id: alice.principal_id },
     bob: { id: bob.principal_id },
     carol: { id: carol.principal_id },
+    dave: { id: dave.principal_id },
     docA: { id: docA.document_id, versionId: versionA.version_id },
     docB: { id: docB.document_id, versionId: versionB.version_id },
   };

@@ -15,6 +15,7 @@ import {
 import type { Pool } from 'pg';
 
 const TENANT_TABLES = [
+  'tenants',
   'groups',
   'group_memberships',
   'tenant_admins',
@@ -27,7 +28,7 @@ const TENANT_TABLES = [
   'audit_events',
 ];
 
-const GLOBAL_TABLES = ['principals', 'sessions', 'tenants', 'authorization_epoch'];
+const GLOBAL_TABLES = ['principals', 'sessions', 'authorization_epoch'];
 const GLOBAL_RLS_TABLES = ['principals', 'sessions', 'tenant_memberships'];
 const RUNTIME_ROLES = ['securerag_api', 'securerag_worker'];
 
@@ -70,6 +71,15 @@ describe('schema catalog contract', () => {
       expect(attrs.rolcreatedb, `${role} can create DBs`).toBe(false);
       expect(attrs.rolcreaterole, `${role} can create roles`).toBe(false);
       expect(attrs.rolcanlogin, `${role} cannot login`).toBe(true);
+      const { rows: memberships } = await pool.query<{ rolname: string }>(
+        `SELECT r.rolname FROM pg_auth_members m
+          JOIN pg_roles r ON r.oid = m.roleid
+          JOIN pg_roles member ON member.oid = m.member
+         WHERE member.rolname = $1`,
+        [role],
+      );
+      expect(memberships.map((m) => m.rolname), `${role} holds privileged memberships`)
+        .not.toContain('securerag_owner');
     }
     const owner = await roleAttributes(pool, 'securerag_owner');
     expect(owner.rolcanlogin, 'owner must be NOLOGIN').toBe(false);
@@ -85,8 +95,11 @@ describe('schema catalog contract', () => {
       const p = policies[0]!;
       expect(p.using_expr, `${name}:${p.polname} missing USING`).toBeTruthy();
       expect(p.with_check_expr, `${name}:${p.polname} missing WITH CHECK`).toBeTruthy();
+      const guard = /current_setting\('securerag\.(tenant_id|principal_id)'|securerag\.ctx_/;
       expect(p.using_expr ?? '', `${name}:${p.polname} USING must reference context GUCs`)
-        .toMatch(/current_setting\('securerag\.(tenant_id|principal_id)'|securerag\.ctx_/);
+        .toMatch(guard);
+      expect(p.with_check_expr ?? '', `${name}:${p.polname} WITH CHECK must reference context GUCs`)
+        .toMatch(guard);
     }
     const memberships = await policiesFor(pool, 'tenant_memberships');
     expect(memberships[0]?.polname).toBe('memberships_access');
@@ -121,7 +134,7 @@ describe('schema catalog contract', () => {
     }
   });
 
-  it('keeps audit events insert-only for runtime roles with no TRUNCATE/REFERENCES anywhere', async () => {
+  it('keeps audit events insert-only and immutables immutable for runtime roles', async () => {
     const auditGrantsApi = await tableGrants(pool, 'audit_events', 'securerag', 'securerag_api');
     expect(auditGrantsApi.sort()).toEqual(['INSERT', 'SELECT']);
     const auditGrantsWorker = await tableGrants(pool, 'audit_events', 'securerag', 'securerag_worker');
@@ -134,10 +147,45 @@ describe('schema catalog contract', () => {
       expect([...all], `${role} has ${[...all].join(',')}`).not.toContain('TRUNCATE');
       expect([...all]).not.toContain('REFERENCES');
     }
+    // Authorization epoch: runtime roles read only; the bump function is the sole write path.
+    expect(await tableGrants(pool, 'authorization_epoch', 'securerag', 'securerag_api')).toEqual(['SELECT']);
+    expect(await tableGrants(pool, 'authorization_epoch', 'securerag', 'securerag_worker')).toEqual(['SELECT']);
+    // chunks immutable after publish; versions never deleted by runtime roles; tenants registry not writable.
+    expect(await tableGrants(pool, 'chunks', 'securerag', 'securerag_api')).toEqual(['INSERT', 'SELECT']);
+    expect(await tableGrants(pool, 'chunks', 'securerag', 'securerag_worker')).toEqual(['INSERT', 'SELECT']);
+    expect(await tableGrants(pool, 'document_versions', 'securerag', 'securerag_api')).toEqual(['INSERT', 'SELECT', 'UPDATE']);
+    expect(await tableGrants(pool, 'document_versions', 'securerag', 'securerag_worker')).toEqual(['INSERT', 'SELECT', 'UPDATE']);
+    expect(await tableGrants(pool, 'tenants', 'securerag', 'securerag_api')).toEqual(['SELECT', 'UPDATE']);
+    expect(await tableGrants(pool, 'tenants', 'securerag', 'securerag_worker')).toEqual(['SELECT']);
+    // Worker never touches identity/session/grant-management data.
+    expect(await tableGrants(pool, 'sessions', 'securerag', 'securerag_worker')).toEqual(['SELECT']);
+    expect(await tableGrants(pool, 'principals', 'securerag', 'securerag_worker')).toEqual(['SELECT']);
   });
 
-  it('contains no SECURITY DEFINER functions and keeps admin_scope security_invoker', async () => {
-    expect(await securityDefinerFunctions(pool)).toEqual([]);
+  it('contains no rogue SECURITY DEFINER functions and keeps admin_scope security_invoker', async () => {
+    const definers = await securityDefinerFunctions(pool);
+    expect(definers, 'only bump_authorization_epoch may be SECURITY DEFINER').toEqual([
+      'bump_authorization_epoch',
+    ]);
+    const { rows } = await pool.query<{
+      prosecdef: boolean;
+      pronargs: string;
+      owner: string;
+      proconfig: string[] | null;
+    }>(
+      `SELECT p.prosecdef, p.pronargs::text,
+              pg_get_userbyid(p.proowner) AS owner,
+              p.proconfig
+         FROM pg_proc p
+         JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'securerag' AND p.proname = 'bump_authorization_epoch'`,
+    );
+    const bump = rows[0]!;
+    expect(bump.prosecdef).toBe(true);
+    expect(bump.pronargs).toBe('0');
+    expect(bump.owner).toBe('securerag_owner');
+    expect((bump.proconfig ?? []).join(';'), 'bump search_path must be pinned')
+      .toContain('search_path');
     const views = await viewSecurity(pool);
     expect(views['admin_scope'], 'admin_scope must be security_invoker').toBe(true);
     const fns = await functionsInSchema(pool);

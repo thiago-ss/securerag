@@ -115,6 +115,134 @@ describe('RLS isolation on real runtime roles', () => {
     );
   });
 
+  it('a member cannot self-insert a membership, self-promote, or self-deactivate', async () => {
+    await expect(
+      withContext(api, { tenant_id: world.tenantB.id, principal_id: world.alice.id }, (c) =>
+        c.query(
+          `INSERT INTO securerag.tenant_memberships (tenant_id, principal_id, role)
+           VALUES ($1, $2, 'member')`,
+          [world.tenantB.id, world.alice.id],
+        ),
+      ),
+    ).rejects.toThrow(/row-level security/);
+    await expect(
+      withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, (c) =>
+        c.query(
+          `UPDATE securerag.tenant_memberships SET role = 'admin'
+           WHERE tenant_id = $1 AND principal_id = $2`,
+          [world.tenantA.id, world.alice.id],
+        ),
+      ),
+    ).rejects.toThrow(/row-level security/);
+    await expect(
+      withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, (c) =>
+        c.query(
+          `UPDATE securerag.tenant_memberships SET is_active = false
+           WHERE tenant_id = $1 AND principal_id = $2`,
+          [world.tenantA.id, world.alice.id],
+        ),
+      ),
+    ).rejects.toThrow(/row-level security/);
+    await expect(
+      withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, (c) =>
+        c.query(
+          `INSERT INTO securerag.tenant_admins (tenant_id, principal_id) VALUES ($1, $2)`,
+          [world.tenantA.id, world.alice.id],
+        ),
+      ),
+    ).rejects.toThrow(/row-level security/);
+  });
+
+  it('an admin can provision a membership (write path is admin-only)', async () => {
+    const inserted = (await withContext(api, { tenant_id: world.tenantA.id, principal_id: world.carol.id }, async (c) =>
+      c.query(
+        `INSERT INTO securerag.tenant_memberships (tenant_id, principal_id, role)
+         VALUES ($1, $2, 'member') RETURNING principal_id`,
+        [world.tenantA.id, world.dave.id],
+      ),
+    )) as { rows: { principal_id: string }[] };
+    expect(inserted.rows[0]?.principal_id).toBe(world.dave.id);
+    const seen = (await withContext(api, { tenant_id: world.tenantA.id, principal_id: world.dave.id }, async (c) =>
+      c.query('SELECT count(*)::int n FROM securerag.tenant_memberships'),
+    )) as { rows: { n: number }[] };
+    expect(seen.rows[0]?.n).toBe(1);
+  });
+
+  it('a non-admin member cannot insert a tenant_admin mirror row', async () => {
+    await expect(
+      withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, (c) =>
+        c.query(
+          `INSERT INTO securerag.tenant_admins (tenant_id, principal_id) VALUES ($1, $2)`,
+          [world.tenantA.id, world.alice.id],
+        ),
+      ),
+    ).rejects.toThrow(/row-level security/);
+  });
+
+  it('tenant registry is not enumerable without verified tenant context', async () => {
+    const noCtx = (await withContext(api, {}, async (c) =>
+      c.query('SELECT count(*)::int n FROM securerag.tenants'),
+    )) as { rows: { n: number }[] };
+    expect(noCtx.rows[0]?.n).toBe(0);
+    const own = (await withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, async (c) =>
+      c.query('SELECT name FROM securerag.tenants'),
+    )) as { rows: { name: string }[] };
+    expect(own.rows.map((r) => r.name)).toEqual(['Tenant Alpha']);
+  });
+
+  it('runtime roles cannot rewind the authorization epoch directly', async () => {
+    await expect(
+      withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, (c) =>
+        c.query(`UPDATE securerag.authorization_epoch SET epoch = 0`),
+      ),
+    ).rejects.toThrow(/permission denied/);
+    const bumped = (await withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, async (c) =>
+      c.query('SELECT securerag.bump_authorization_epoch() AS epoch'),
+    )) as { rows: { epoch: string }[] };
+    expect(Number(bumped.rows[0]?.epoch)).toBeGreaterThan(0);
+  });
+
+  it('audit events are tenant-isolated on read-back', async () => {
+    await db.superuserPool.query(
+      `INSERT INTO securerag.audit_events (tenant_id, event_type, request_id, auth_epoch, redacted_query) VALUES
+         ($1, 'allowed', gen_random_uuid(), 1, 'q-a'),
+         ($2, 'denied', gen_random_uuid(), 1, 'q-b')`,
+      [world.tenantA.id, world.tenantB.id],
+    );
+    const aliceRows = (await withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, async (c) =>
+      c.query('SELECT redacted_query FROM securerag.audit_events'),
+    )) as { rows: { redacted_query: string }[] };
+    expect(aliceRows.rows.map((r) => r.redacted_query)).toEqual(['q-a']);
+    const bobRows = (await withContext(api, { tenant_id: world.tenantB.id, principal_id: world.bob.id }, async (c) =>
+      c.query('SELECT redacted_query FROM securerag.audit_events'),
+    )) as { rows: { redacted_query: string }[] };
+    expect(bobRows.rows.map((r) => r.redacted_query)).toEqual(['q-b']);
+  });
+
+  it('worker role can produce derived data and audit but never mutate chunks', async () => {
+    const worker = db.workerPool;
+    const chunks = (await withContext(worker, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, async (c) =>
+      c.query('SELECT chunk_no FROM securerag.chunks ORDER BY chunk_no'),
+    )) as { rows: { chunk_no: number }[] };
+    expect(chunks.rows.map((r) => r.chunk_no)).toEqual([1, 2]);
+    await expect(
+      withContext(worker, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, (c) =>
+        c.query(
+          `UPDATE securerag.chunks SET text_redacted = 'tampered' WHERE tenant_id = $1`,
+          [world.tenantA.id],
+        ),
+      ),
+    ).rejects.toThrow(/permission denied/);
+    const inserted = (await withContext(worker, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, async (c) =>
+      c.query(
+        `INSERT INTO securerag.audit_events (tenant_id, event_type, request_id, auth_epoch)
+         VALUES ($1, 'lifecycle', gen_random_uuid(), 1) RETURNING event_id`,
+        [world.tenantA.id],
+      ),
+    )) as { rows: { event_id: string }[] };
+    expect(inserted.rows[0]?.event_id).toBeDefined();
+  });
+
   it('audit events are insertable but never updatable or deletable by runtime roles', async () => {
     const inserted = (await withContext(api, { tenant_id: world.tenantA.id, principal_id: world.alice.id }, async (c) =>
       c.query(

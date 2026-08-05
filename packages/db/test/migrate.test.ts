@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { mkdtemp, writeFile, cp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { getTestDb, type TestDb } from './helpers.js';
-import { applyMigrations } from '../src/migrate.js';
+import { applyMigrations, MIGRATIONS_DIR } from '../src/migrate.js';
 import type { Pool } from 'pg';
 
 describe('migration runner', () => {
@@ -45,5 +48,37 @@ describe('migration runner', () => {
       ]);
     }
     await expect(applyMigrations(pool)).resolves.toHaveLength(original.size);
+  });
+
+  it('rejects when an applied migration disappears from disk', async () => {
+    await pool.query(
+      `INSERT INTO securerag.migrations (filename, checksum)
+       VALUES ('0999_ghost_migration.sql', repeat('a', 64))`,
+    );
+    await expect(applyMigrations(pool)).rejects.toThrow(/no longer exists/);
+    await db.superuserPool.query(`DELETE FROM securerag.migrations WHERE filename = '0999_ghost_migration.sql'`);
+  });
+
+  it('is failure-atomic: a failing migration records nothing and leaves prior state intact', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'securerag-migrate-'));
+    try {
+      await cp(MIGRATIONS_DIR, dir, { recursive: true });
+      const failing = `SELECT 1;\nINSERT INTO securerag.tenants (tenant_id, name) VALUES ('not-a-uuid', 'x');\n`;
+      await writeFile(path.join(dir, '0004_failing_test.sql'), failing);
+      await expect(applyMigrations(pool, { dir })).rejects.toThrow(/uuid/);
+      const { rows } = await pool.query<{ filename: string }>(
+        'SELECT filename FROM securerag.migrations ORDER BY filename',
+      );
+      expect(rows.map((r) => r.filename)).toEqual([
+        '0002_schema.sql',
+        '0003_rls_and_grants.sql',
+      ]);
+      const { rows: tenants } = await db.superuserPool.query<{ tenant_id: string }>(
+        'SELECT tenant_id FROM securerag.tenants',
+      );
+      expect(tenants).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
