@@ -1,0 +1,7 @@
+{
+  "name": "@securerag/web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SecureRAG accessible enterprise console",
+  "engines": { "node": ">=22.22" }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "securerag",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Production-ready multitenant enterprise knowledge platform",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.22"
+  },
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:db": "npm run test --workspace @securerag/db",
+    "test:db:catalog": "npm run test:catalog --workspace @securerag/db"
+  }
+}

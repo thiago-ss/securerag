@@ -1,0 +1,7 @@
+{
+  "name": "@securerag/worker",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SecureRAG job consumer (extraction, embeddings, purge, audit expiry)",
+  "engines": { "node": ">=22.22" }
+}

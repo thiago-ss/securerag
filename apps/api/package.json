@@ -1,0 +1,7 @@
+{
+  "name": "@securerag/api",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SecureRAG Fastify REST API",
+  "engines": { "node": ">=22.22" }
+}
