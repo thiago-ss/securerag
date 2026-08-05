@@ -277,3 +277,202 @@ describe('RLS isolation on real runtime roles', () => {
     expect(Number(second.rows[0]?.epoch)).toBeGreaterThan(Number(first.rows[0]?.epoch));
   });
 });
+
+describe('S1 RLS kernel — sessions, identity, admin-only groups on real runtime roles', () => {
+  let db: TestDb;
+  let api: Pool;
+  let world: Awaited<ReturnType<typeof seedFixtures>>;
+
+  beforeAll(async () => {
+    db = await getTestDb();
+    await resetData(db.superuserPool);
+    world = await seedFixtures(db.superuserPool);
+    api = db.apiPool;
+  });
+
+  afterAll(async () => {
+    await db.stop();
+  });
+
+  async function withContext(
+    pool: Pool,
+    ctx: Record<string, string>,
+    fn: (client: import('pg').PoolClient) => Promise<unknown>,
+  ): Promise<unknown> {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const [key, value] of Object.entries(ctx)) {
+        await client.query(`SELECT set_config($1, $2, true)`, [`securerag.${key}`, value]);
+      }
+      const result = await fn(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  it('sessions are principal-scoped: no context shows nothing; own context shows own rows only', async () => {
+    const tokenHash = Buffer.from(
+      'a'.repeat(64),
+      'hex',
+    );
+    await db.superuserPool.query(
+      `INSERT INTO securerag.sessions (principal_id, csrf_token, token_hash, expires_at)
+       VALUES ($1, decode('bb', 'hex'), $2, now() + interval '1 hour')`,
+      [world.alice.id, tokenHash],
+    );
+    const noCtx = (await withContext(api, {}, async (c) =>
+      c.query('SELECT count(*)::int n FROM securerag.sessions'),
+    )) as { rows: { n: number }[] };
+    expect(noCtx.rows[0]?.n).toBe(0);
+    const aliceRows = (await withContext(api, { principal_id: world.alice.id }, async (c) =>
+      c.query('SELECT principal_id FROM securerag.sessions'),
+    )) as { rows: { principal_id: string }[] };
+    expect(aliceRows.rows.map((r) => r.principal_id)).toEqual([world.alice.id]);
+    const bobRows = (await withContext(api, { principal_id: world.bob.id }, async (c) =>
+      c.query('SELECT count(*)::int n FROM securerag.sessions'),
+    )) as { rows: { n: number }[] };
+    expect(bobRows.rows[0]?.n).toBe(0);
+  });
+
+  it('get_session/revoke_session enforce validity inside SQL; foreign and revoked tokens are indistinguishable', async () => {
+    const tokenHash = Buffer.from('bb'.repeat(32), 'hex');
+    const otherHash = Buffer.from('cc'.repeat(32), 'hex');
+    await db.superuserPool.query(
+      `INSERT INTO securerag.sessions (principal_id, csrf_token, token_hash, expires_at)
+       VALUES ($1, decode('dd', 'hex'), $2, now() + interval '1 hour')`,
+      [world.alice.id, tokenHash],
+    );
+    await db.superuserPool.query(
+      `INSERT INTO securerag.sessions (principal_id, csrf_token, token_hash, expires_at, revoked_at)
+       VALUES ($1, decode('dd', 'hex'), $2, now() + interval '1 hour', now())`,
+      [world.alice.id, otherHash],
+    );
+
+    const live = (await withContext(api, {}, async (c) =>
+      c.query<{ principal_id: string }>('SELECT principal_id FROM securerag.get_session($1)', [tokenHash]),
+    )) as { rows: { principal_id: string }[] };
+    expect(live.rows[0]?.principal_id).toBe(world.alice.id);
+
+    const revoked = (await withContext(api, {}, async (c) =>
+      c.query('SELECT principal_id FROM securerag.get_session($1)', [otherHash]),
+    )) as { rows: unknown[] };
+    const foreign = (await withContext(api, {}, async (c) =>
+      c.query('SELECT principal_id FROM securerag.get_session($1)', [
+        Buffer.from('ee'.repeat(32), 'hex'),
+      ]),
+    )) as { rows: unknown[] };
+    expect(revoked.rows).toEqual([]);
+    expect(foreign.rows).toEqual([]);
+
+    const first = (await withContext(api, {}, async (c) =>
+      c.query('SELECT securerag.revoke_session($1) AS revoked', [tokenHash]),
+    )) as { rows: { revoked: boolean }[] };
+    expect(first.rows[0]?.revoked).toBe(true);
+    // A second revoke is a silent no-op: a scalar SQL function returning zero
+    // rows yields a single NULL row (never an error, never a second effect).
+    const second = (await withContext(api, {}, async (c) =>
+      c.query('SELECT securerag.revoke_session($1) AS revoked', [tokenHash]),
+    )) as { rows: { revoked: boolean | null }[] };
+    expect(second.rows[0]?.revoked).toBeNull();
+    const after = (await withContext(api, {}, async (c) =>
+      c.query('SELECT principal_id FROM securerag.get_session($1)', [tokenHash]),
+    )) as { rows: unknown[] };
+    expect(after.rows).toEqual([]);
+  });
+
+  it('upsert_principal is idempotent and returns a stable id (no existence oracle)', async () => {
+    const first = (await withContext(api, {}, async (c) =>
+      c.query('SELECT securerag.upsert_principal($1, $2, $3) AS id', [
+        'test-issuer',
+        'fresh-subject',
+        'Fresh Face',
+      ]),
+    )) as { rows: { id: string }[] };
+    const id1 = first.rows[0]?.id;
+    expect(id1).toBeTruthy();
+    const second = (await withContext(api, {}, async (c) =>
+      c.query('SELECT securerag.upsert_principal($1, $2, $3) AS id', [
+        'test-issuer',
+        'fresh-subject',
+        'Fresh Face v2',
+      ]),
+    )) as { rows: { id: string }[] };
+    expect(second.rows[0]?.id).toBe(id1);
+    const { rows } = await db.superuserPool.query<{ display_name: string; count: string }>(
+      `SELECT display_name, count(*)::int AS count
+         FROM securerag.principals WHERE provider = 'test-issuer' AND external_subject = 'fresh-subject'
+        GROUP BY display_name`,
+    );
+    expect(rows[0]).toMatchObject({ display_name: 'Fresh Face v2' });
+  });
+
+  it('groups: a member cannot create, delete, or modify groups or memberships; an admin can', async () => {
+    const member = { tenant_id: world.tenantA.id, principal_id: world.alice.id };
+    const admin = { tenant_id: world.tenantA.id, principal_id: world.carol.id };
+    await expect(
+      withContext(api, member, (c) =>
+        c.query(`INSERT INTO securerag.groups (tenant_id, name) VALUES ($1, 'sneaky')`, [
+          world.tenantA.id,
+        ]),
+      ),
+    ).rejects.toThrow(/row-level security/);
+
+    const created = (await withContext(api, admin, async (c) =>
+      c.query<{ group_id: string }>(
+        `INSERT INTO securerag.groups (tenant_id, name) VALUES ($1, 'Admin Group') RETURNING group_id`,
+        [world.tenantA.id],
+      ),
+    )) as { rows: { group_id: string }[] };
+    const groupId = created.rows[0]?.group_id;
+    expect(groupId).toBeTruthy();
+
+    await expect(
+      withContext(api, member, (c) =>
+        c.query(
+          `INSERT INTO securerag.group_memberships (tenant_id, group_id, principal_id)
+           VALUES ($1, $2, $3)`,
+          [world.tenantA.id, groupId, world.alice.id],
+        ),
+      ),
+    ).rejects.toThrow(/row-level security/);
+
+    // DELETE on a policy-invisible row is a silent 0-row no-op (never an
+    // error, never a side effect): the member's attempt touches nothing.
+    const memberDelete = (await withContext(api, member, async (c) =>
+      c.query(`DELETE FROM securerag.groups WHERE tenant_id = $1 AND group_id = $2`, [
+        world.tenantA.id,
+        groupId,
+      ]),
+    )) as { rowCount: number };
+    expect(memberDelete.rowCount).toBe(0);
+    const stillThere = (await db.superuserPool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM securerag.groups WHERE group_id = $1`,
+      [groupId],
+    )).rows[0]?.n;
+    expect(stillThere).toBe(1);
+
+    const added = (await withContext(api, admin, async (c) =>
+      c.query<{ principal_id: string }>(
+        `INSERT INTO securerag.group_memberships (tenant_id, group_id, principal_id)
+         VALUES ($1, $2, $3) RETURNING principal_id`,
+        [world.tenantA.id, groupId, world.bob.id],
+      ),
+    )) as { rows: { principal_id: string }[] };
+    expect(added.rows[0]?.principal_id).toBe(world.bob.id);
+  });
+
+  it('a member sees only their OWN group membership rows (self-read branch for retrieval)', async () => {
+    const member = { tenant_id: world.tenantA.id, principal_id: world.bob.id };
+    const rows = (await withContext(api, member, async (c) =>
+      c.query('SELECT group_id, principal_id FROM securerag.group_memberships'),
+    )) as { rows: { group_id: string; principal_id: string }[] };
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]).toMatchObject({ principal_id: world.bob.id });
+  });
+});

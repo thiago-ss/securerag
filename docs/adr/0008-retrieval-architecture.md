@@ -36,3 +36,83 @@ citation verify -> audit -> respond/refuse`.
 
 - HNSW+RLS filter starvation (narrow-ACL principals) is a tested footgun: recall@k and result-count
   assertions on 10%/1% selectivity principals.
+
+---
+
+# Amendment 1 (S6) — chosen HNSW strategy, ef_search default, measured recall
+
+- Status: accepted. Supersedes the Decision's "Per-tenant partial HNSW indexes" sentence; confirms
+  the strict_order and recall-baseline sentences with measurements.
+
+## Chosen strategy: single shared HNSW index + strict_order
+
+Migration 0004 creates ONE shared index, `chunks_embedding_hnsw` on `(embedding)` with
+`vector_cosine_ops` (m=16, ef_construction=64). The per-query settings are transaction-local
+`SET LOCAL` statements inside the withSecurityContext transaction (never session-level, never
+schema objects):
+
+- `SET LOCAL hnsw.iterative_scan = strict_order` (pgvector 0.8.6): exact distance ordering under
+  RLS/ACL filters; the scan overfetches until k rows pass the filter or `hnsw.max_scan_tuples`
+  (20 000), so recall@k and result counts do not depend on ef_search for corpora below the cap.
+- `SET LOCAL hnsw.ef_search = <default>` — see below.
+
+Rejected alternatives, with reasons:
+
+- **Per-tenant partial HNSW indexes** (original Decision): the tenant set is dynamic (tenants are
+  created at runtime), so partial indexes cannot be created from a static SQL migration, and a
+  runtime-created index per tenant is unbounded churn. The original rationale (one tenant must not
+  degrade another's recall) is neutralized by strict_order: ordering is exact and the scan keeps
+  going until k rows pass — shared-graph contents can delay but never starve a filtered search.
+  Cross-tenant LATENCY remains a measured-scale partitioning trigger (r4 §2.3), never a recall
+  risk.
+- **Composite HNSW on (tenant_id, embedding)**: pgvector supports leading non-vector columns, but
+  the coarse filter only helps when the tenant predicate appears in the query TEXT — RLS quals are
+  invisible to the planner, so the tenant filter would have to be duplicated into SQL (redundant
+  with RLS). It also does not address the real starvation driver: ACL-level (grant) selectivity
+  within a tenant.
+
+## ef_search default
+
+The recall baseline gate (below) passes at every swept value; the smallest is chosen:
+
+**`hnsw.ef_search = 40`** (`RETRIEVAL_EF_SEARCH` in packages/core). With strict_order, recall and
+result counts are independent of ef_search; ef_search only trades latency on the first scan wave.
+Re-run the baseline (packages/eval/test/recall-baseline.test.ts) after any fixture or index change.
+
+## Measured recall (2026-08-05, 200 docs / 600 chunks / 40 labeled queries, one tenant)
+
+Exact ground truths computed as the least-privilege runtime role with RLS on
+(`SET LOCAL enable_indexscan/bitmapscan = off`); principals at 100% / 10% / 1% grant selectivity
+(1% = 6 allowed chunks, spread across topics). Full report: `test-results/recall.json`
+(gitignored).
+
+| arm (settings) | selectivity | recall@20 (ef 40/100/200/400) | starved queries |
+| --- | --- | --- | --- |
+| hybrid (production planner settings) | 100% / 10% / 1% | 1.0000 / 1.0000 / 1.0000 each | 0 / 0 / 0 |
+| vector (forced HNSW + strict_order) | 100% / 10% / 1% | 1.0000 / 1.0000 / 1.0000 each | 0 / 0 / 0 |
+
+- **Footgun proven and fixed**: the vector arm alone, forced HNSW WITHOUT strict_order,
+  ef_search=40, 1% selectivity → **40/40 queries starved** below min(k, allowed)=6 (the
+  filtering-after-scan caveat, r4 §2.1). The same runs WITH strict_order → 0% starvation and
+  recall 1.0. This is the reason strict_order is mandatory per-query.
+- **Determinism**: same query twice → identical ordered id lists (40 queries, both arms).
+- **Keyword arm unaffected**: id lists byte-identical with the HNSW settings applied or not.
+- Gate: recall@20 ≥ 0.95 at every selectivity with 0% starvation — PASS at ef_search = 40.
+
+## Measurement notes
+
+- At fixture scale the planner prefers the exact grant-driven join + sort over the HNSW scan
+  (r4 §2.1 fallback: small authorized sets are scanned exactly). That is correct production
+  behavior and is measured as the "hybrid (production planner settings)" row. To characterize the
+  genuine approximate-index path, the baseline forces the HNSW scan
+  (`SET LOCAL enable_seqscan/sort = off`, a measurement lever exported as
+  `RetrievalQuerySettings.forceIndex`, never set in production).
+- The CI embedding fake (DeterministicHashEmbedding) spreads each token over ~16 dimensions.
+  Sparse one-dimension-per-token hashing was measured to produce a degenerate HNSW graph
+  (recall 0.0 at ef_search=40 on the same corpus) — dense-enough vectors are a fixture
+  requirement for navigable HNSW graphs, matching real dense models.
+- Chunks with NULL embeddings are excluded from the vector arm (`WHERE embedding IS NOT NULL`);
+  they are not indexed and cannot be compared.
+- `RetrievalParams.mode` ('hybrid' default, 'keyword'|'vector' for tests) is a contract-visible
+  seam; the HTTP boundary does not expose it in v1.
+

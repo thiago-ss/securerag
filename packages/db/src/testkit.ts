@@ -164,6 +164,8 @@ export interface SeedChunkParams {
   text: string;
   spanStart: number;
   spanEnd: number;
+  /** Optional precomputed embedding vector (vector(384)); chunks seeded without it have NULL embedding. */
+  embedding?: number[];
 }
 
 export async function seedGroup(
@@ -253,10 +255,12 @@ export async function seedChunk(
   pool: pg.Pool,
   params: SeedChunkParams,
 ): Promise<string> {
+  const withEmbedding = params.embedding !== undefined;
   const { rows } = await pool.query<{ chunk_id: string }>(
     `INSERT INTO securerag.chunks
-       (tenant_id, version_id, chunk_no, text_redacted, span_start, span_end, content_hash)
-     VALUES ($1, $2, $3, $4, $5, $6, decode('aabb', 'hex')) RETURNING chunk_id`,
+       (tenant_id, version_id, chunk_no, text_redacted, span_start, span_end,
+        content_hash${withEmbedding ? ', embedding' : ''})
+     VALUES ($1, $2, $3, $4, $5, $6, decode('aabb', 'hex')${withEmbedding ? ', $7::vector' : ''}) RETURNING chunk_id`,
     [
       params.tenantId,
       params.versionId,
@@ -264,6 +268,9 @@ export async function seedChunk(
       params.text,
       params.spanStart,
       params.spanEnd,
+      ...(withEmbedding
+        ? [`[${params.embedding!.map((v) => v.toFixed(6)).join(',')}]` as string]
+        : []),
     ],
   );
   const chunkId = rows[0]?.chunk_id;

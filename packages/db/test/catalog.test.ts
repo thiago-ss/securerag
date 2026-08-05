@@ -162,30 +162,112 @@ describe('schema catalog contract', () => {
     expect(await tableGrants(pool, 'principals', 'securerag', 'securerag_worker')).toEqual(['SELECT']);
   });
 
-  it('contains no rogue SECURITY DEFINER functions and keeps admin_scope security_invoker', async () => {
+  it('pins the documented SECURITY DEFINER set (ADR-0014) and keeps admin_scope security_invoker', async () => {
     const definers = await securityDefinerFunctions(pool);
-    expect(definers, 'only bump_authorization_epoch may be SECURITY DEFINER').toEqual([
+    expect(definers, 'only the ADR-0013/0014 functions may be SECURITY DEFINER').toEqual([
       'bump_authorization_epoch',
+      'get_session',
+      'revoke_session',
+      'upsert_principal',
     ]);
-    const { rows } = await pool.query<{
+    const definerAttrs = async (name: string): Promise<{
       prosecdef: boolean;
-      pronargs: string;
       owner: string;
       proconfig: string[] | null;
-    }>(
-      `SELECT p.prosecdef, p.pronargs::text,
-              pg_get_userbyid(p.proowner) AS owner,
-              p.proconfig
-         FROM pg_proc p
-         JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'securerag' AND p.proname = 'bump_authorization_epoch'`,
+    }> => {
+      const { rows } = await pool.query<{
+        prosecdef: boolean;
+        owner: string;
+        proconfig: string[] | null;
+      }>(
+        `SELECT p.prosecdef,
+                pg_get_userbyid(p.proowner) AS owner,
+                p.proconfig
+           FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'securerag' AND p.proname = $1`,
+        [name],
+      );
+      const row = rows[0];
+      if (!row) throw new Error(`definer function missing: ${name}`);
+      return row;
+    };
+    const definerOwner = async (name: string): Promise<string> => {
+      const { rows } = await pool.query<{ owner: string }>(
+        `SELECT pg_get_userbyid(p.proowner) AS owner
+           FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'securerag' AND p.proname = $1`,
+        [name],
+      );
+      const row = rows[0];
+      if (!row) throw new Error(`definer function missing: ${name}`);
+      return row.owner;
+    };
+    for (const name of definers) {
+      const attr = await definerAttrs(name);
+      expect(attr.prosecdef, `${name} not SECURITY DEFINER`).toBe(true);
+      const expectedOwner =
+        name === 'bump_authorization_epoch' ? 'securerag_owner' : 'securerag_session_lookup';
+      expect(await definerOwner(name), `${name} wrong owner`).toBe(expectedOwner);
+      expect((attr.proconfig ?? []).join(';'), `${name} search_path must be pinned`)
+        .toContain('search_path');
+      const { rows: acl } = await pool.query<{ executeable_by_public: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE n.nspname = 'securerag' AND p.proname = $1
+             AND has_function_privilege('public', p.oid, 'EXECUTE')
+         ) AS executeable_by_public`,
+        [name],
+      );
+      expect(acl[0]?.executeable_by_public, `${name} must be revoked from PUBLIC`).toBe(false);
+    }
+    // The session-lookup role exists ONLY to own the S1 definers: NOLOGIN,
+    // BYPASSRLS (so the functions can see sessions/principals), granted to no
+    // login-capable role, with api/worker unable to reach it.
+    const lookup = await roleAttributes(pool, 'securerag_session_lookup');
+    expect(lookup.rolcanlogin, 'session-lookup must be NOLOGIN').toBe(false);
+    expect(lookup.rolbypassrls, 'session-lookup must BYPASSRLS (ADR-0014)').toBe(true);
+    expect(lookup.rolsuper).toBe(false);
+    expect(lookup.rolcreaterole).toBe(false);
+    const { rows: grantees } = await pool.query<{ rolname: string }>(
+      `SELECT r.rolname
+         FROM pg_auth_members m
+         JOIN pg_roles granted ON granted.oid = m.roleid
+         JOIN pg_roles r ON r.oid = m.member
+        WHERE granted.rolname = $1
+        ORDER BY r.rolname`,
+      ['securerag_session_lookup'],
     );
-    const bump = rows[0]!;
-    expect(bump.prosecdef).toBe(true);
-    expect(bump.pronargs).toBe('0');
-    expect(bump.owner).toBe('securerag_owner');
-    expect((bump.proconfig ?? []).join(';'), 'bump search_path must be pinned')
-      .toContain('search_path');
+    expect(grantees.map((r) => r.rolname), 'session-lookup granted only to the NOLOGIN owner')
+      .toEqual(['securerag_owner']);
+    for (const role of RUNTIME_ROLES) {
+      const { rows: indirect } = await pool.query<{ n: number }>(
+        `SELECT count(*)::int AS n
+           FROM pg_auth_members m
+          JOIN pg_roles member ON member.oid = m.member
+          WHERE member.rolname = $1 AND m.roleid IN (
+            SELECT oid FROM pg_roles
+             WHERE rolname IN ('securerag_owner', 'securerag_session_lookup'))`,
+        [role],
+      );
+      expect(indirect[0]?.n ?? 0, `${role} must not reach session-lookup via owner membership`).toBe(0);
+    }
+    const { rows: grants } = await pool.query<{ grantee: string }>(
+      `SELECT DISTINCT grantee
+         FROM information_schema.routine_privileges
+        WHERE routine_schema = 'securerag'
+          AND routine_name IN ('get_session', 'revoke_session', 'upsert_principal')
+          AND privilege_type = 'EXECUTE'
+        ORDER BY grantee`,
+    );
+    // The owner row is the implicit owner grant (function owner always
+    // executes its own objects); the only other grantee is the api role.
+    expect(grants.map((r) => r.grantee), 'session/identity definers: owner + api only').toEqual([
+      'securerag_api',
+      'securerag_session_lookup',
+    ]);
     const views = await viewSecurity(pool);
     expect(views['admin_scope'], 'admin_scope must be security_invoker').toBe(true);
     const fns = await functionsInSchema(pool);
@@ -195,6 +277,9 @@ describe('schema catalog contract', () => {
         'ctx_tenant_id',
         'ctx_principal_id',
         'ctx_principal_is_admin',
+        'get_session',
+        'revoke_session',
+        'upsert_principal',
       ]),
     );
   });

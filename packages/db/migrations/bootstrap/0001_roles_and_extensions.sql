@@ -28,11 +28,24 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'securerag_purge') THEN
     CREATE ROLE securerag_purge LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
   END IF;
+  -- Function-owner role for the S1 session/identity SECURITY DEFINER functions
+  -- (ADR-0014): NOLOGIN, NOINHERIT, and granted to NOBYPASSRLS-checking nobody,
+  -- so its BYPASSRLS reaches the sessions/principals tables ONLY through the
+  -- three tiny, EXECUTE-gated functions it owns. The api role never holds
+  -- membership and cannot SET ROLE to it. See ADR-0014 and migration 0005.
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'securerag_session_lookup') THEN
+    CREATE ROLE securerag_session_lookup NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT BYPASSRLS;
+  END IF;
 END
 $$;
 
 -- Migration role may impersonate the owner for DDL (policies are owner-only).
 GRANT securerag_owner TO securerag_migration;
+-- The owner may impersonate the session-lookup role so the migration can
+-- create the S1 SECURITY DEFINER functions owned by it (ADR-0014). Only the
+-- migration (which can already perform arbitrary DDL as owner) can reach this
+-- role; runtime roles hold no membership anywhere on this chain.
+GRANT securerag_session_lookup TO securerag_owner;
 
 -- PostgreSQL 18 grants no CREATE on databases to PUBLIC by default; the migration
 -- role and the NOLOGIN owner (via SET ROLE) need CREATE to bootstrap the schema.

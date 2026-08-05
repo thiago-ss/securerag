@@ -1,17 +1,16 @@
-import { createRuntimePool } from '@securerag/security';
+import { createRuntimePool, sessionCookieName } from '@securerag/security';
 import { SpyGenerator } from '@securerag/providers';
 import { buildApp } from './app.js';
 import { envSchema } from './schemas.js';
 
 /**
- * API entrypoint (T3 contract §API, apps/api deliverable). Reads the runtime
- * environment via the zod env schema, builds the least-privilege
- * securerag_api pool, and starts the Fastify server. Graceful shutdown:
- * SIGTERM/SIGINT close the server first, then the pool.
+ * API entrypoint (S1). Reads the runtime environment via the zod env schema,
+ * builds the least-privilege securerag_api pool, wires the real OIDC provider
+ * configuration (issuer = trust anchor), and starts the Fastify server.
+ * Graceful shutdown: SIGTERM/SIGINT close the server first, then the pool.
  *
- * T3 provider: the deterministic SpyGenerator is the ONLY generator in this
- * node (contract: "model spy is the only generator"); real adapters land
- * behind the same AnswerGenerator seam later.
+ * S1 provider: the deterministic SpyGenerator is the ONLY generator in this
+ * node; real adapters land behind the same AnswerGenerator seam later.
  */
 const env = envSchema.parse(process.env);
 
@@ -23,7 +22,25 @@ const pool = createRuntimePool('securerag_api', {
   max: 10,
 });
 
-const app = await buildApp({ pool, providers: new SpyGenerator() });
+const sessionCookieSecure = env.SESSION_COOKIE_SECURE;
+const app = await buildApp({
+  pool,
+  providers: new SpyGenerator(),
+  oidc: {
+    issuer: env.OIDC_ISSUER,
+    clientId: env.OIDC_CLIENT_ID,
+    redirectUri: env.OIDC_REDIRECT_URI,
+    ...(env.OIDC_POST_LOGOUT_REDIRECT_URI !== undefined
+      ? { postLogoutRedirectUri: env.OIDC_POST_LOGOUT_REDIRECT_URI }
+      : {}),
+    ...(env.OIDC_DISCOVERY_URL !== undefined ? { discoveryUrl: env.OIDC_DISCOVERY_URL } : {}),
+    sessionCookieName: sessionCookieName(sessionCookieSecure),
+    sessionCookieSecure,
+    sessionTtlSeconds: env.SESSION_TTL_SECONDS,
+    postLoginRedirectPath: '/',
+    postLogoutRedirectPath: '/',
+  },
+});
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {

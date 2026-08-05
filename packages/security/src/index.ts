@@ -20,3 +20,35 @@ export {
 } from './context.js';
 export { createRuntimePool, type RuntimeRole } from './db.js';
 export { ERROR_CODES, MembershipError, SecurityContextError } from './errors.js';
+export { ALLOWED_SIGNING_ALGS, base64urlDecode, base64urlEncode, InvalidTokenError, type DecodedJwt, type Jwk, type JwkSet } from './jwt.js';
+export {
+  InMemoryLoginStore,
+  InvalidIdTokenError,
+  OidcClient,
+  OidcProviderError,
+  validateIdToken,
+  type ExchangeResult,
+  type IdTokenClaims,
+  type IdTokenValidationContext,
+  type OidcClientConfig,
+  type OidcMetadata,
+  type PendingLogin,
+} from './oidc.js';
+export {
+  buildSessionCookie,
+  createSession,
+  csrfMatches,
+  expireSessionCookie,
+  getSession,
+  hashSessionToken,
+  newSessionToken,
+  parseCookieHeader,
+  revokeSession,
+  sessionCookieName,
+  SESSION_COOKIE_HOST_PREFIX,
+  SESSION_COOKIE_PLAIN_NAME,
+  validateSessionCookieConfig,
+  type CreateSessionParams,
+  type SessionCookieOptions,
+  type SessionRow,
+} from './sessions.js';

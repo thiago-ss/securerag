@@ -37,6 +37,77 @@ export const auditQuerySchema = z.object({
 });
 export type AuditQuery = z.infer<typeof auditQuerySchema>;
 
+// ---------- S1 auth / admin boundaries ----------
+
+export const tenantQuerySchema = z.object({ tenantId: uuidSchema });
+export type TenantQuery = z.infer<typeof tenantQuerySchema>;
+
+export const callbackQuerySchema = z.object({
+  code: z.string().min(1).max(1000),
+  state: z.string().min(1).max(500),
+  iss: z.string().optional(),
+});
+export type CallbackQuery = z.infer<typeof callbackQuerySchema>;
+
+export const membershipCreateSchema = z.object({
+  tenantId: uuidSchema,
+  principalId: uuidSchema,
+  role: z.enum(['admin', 'member', 'security_reviewer']),
+});
+export type MembershipCreate = z.infer<typeof membershipCreateSchema>;
+
+export const membershipUpdateSchema = z
+  .object({
+    tenantId: uuidSchema,
+    principalId: uuidSchema,
+    role: z.enum(['admin', 'member', 'security_reviewer']).optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((v) => v.role !== undefined || v.isActive !== undefined, {
+    message: 'role or isActive required',
+  });
+export type MembershipUpdate = z.infer<typeof membershipUpdateSchema>;
+
+export const membershipRemoveQuerySchema = z.object({
+  tenantId: uuidSchema,
+  principalId: uuidSchema,
+});
+export type MembershipRemoveQuery = z.infer<typeof membershipRemoveQuerySchema>;
+
+export const groupCreateSchema = z.object({
+  tenantId: uuidSchema,
+  name: z.string().min(1).max(200),
+});
+export type GroupCreate = z.infer<typeof groupCreateSchema>;
+
+export const groupRemoveQuerySchema = z.object({
+  tenantId: uuidSchema,
+  groupId: uuidSchema,
+});
+export type GroupRemoveQuery = z.infer<typeof groupRemoveQuerySchema>;
+
+export const groupMemberBodySchema = z.object({
+  tenantId: uuidSchema,
+  principalId: uuidSchema,
+});
+export type GroupMemberBody = z.infer<typeof groupMemberBodySchema>;
+
+export const groupMemberRemoveQuerySchema = z.object({
+  tenantId: uuidSchema,
+  principalId: uuidSchema,
+});
+export type GroupMemberRemoveQuery = z.infer<typeof groupMemberRemoveQuerySchema>;
+
+export const grantBodySchema = z.object({
+  subjectType: z.enum(['principal', 'group', 'tenant_role']),
+  subjectId: z.string().min(1).max(200),
+  capability: z.enum(['read', 'write', 'manage']),
+});
+export type GrantBody = z.infer<typeof grantBodySchema>;
+
+export const grantRemoveBodySchema = z.object({ grantId: uuidSchema });
+export type GrantRemoveBody = z.infer<typeof grantRemoveBodySchema>;
+
 // ---------- response shapes (also drive the committed OpenAPI) ----------
 
 export const spanSchema = z.object({
@@ -108,6 +179,73 @@ export const auditRecordSchema = z.object({
 
 export const auditListSchema = z.object({ events: z.array(auditRecordSchema) });
 
+export const membershipRecordSchema = z.object({
+  tenantId: z.string(),
+  membershipId: z.string(),
+  principalId: z.string(),
+  role: z.string(),
+  isActive: z.boolean(),
+  joinedAt: z.string(),
+});
+export type MembershipRecord = z.infer<typeof membershipRecordSchema>;
+
+export const membershipListSchema = z.object({ members: z.array(membershipRecordSchema) });
+
+export const membershipCreateResponseSchema = z.object({
+  membership: membershipRecordSchema,
+});
+
+export const groupRecordSchema = z.object({
+  tenantId: z.string(),
+  groupId: z.string(),
+  name: z.string(),
+  createdAt: z.string(),
+});
+export type GroupRecord = z.infer<typeof groupRecordSchema>;
+
+export const groupListSchema = z.object({ groups: z.array(groupRecordSchema) });
+
+export const groupCreateResponseSchema = z.object({ group: groupRecordSchema });
+
+export const grantRecordSchema = z.object({
+  tenantId: z.string(),
+  documentId: z.string(),
+  grantId: z.string(),
+  subjectType: z.string(),
+  subjectId: z.string(),
+  capability: z.string(),
+  createdAt: z.string(),
+});
+export type GrantRecord = z.infer<typeof grantRecordSchema>;
+
+export const grantListSchema = z.object({ grants: z.array(grantRecordSchema) });
+
+export const grantCreateResponseSchema = z.object({ grant: grantRecordSchema });
+
+export const okSchema = z.object({ ok: z.literal(true) });
+
+export const meSchema = z.object({
+  principal: z.object({
+    principalId: z.string(),
+    provider: z.string(),
+    externalSubject: z.string(),
+    displayName: z.string(),
+  }),
+  session: z.object({
+    sessionId: z.string(),
+    expiresAt: z.string(),
+    csrfToken: z.string(),
+  }),
+  memberships: z.array(
+    z.object({
+      tenantId: z.string(),
+      membershipId: z.string(),
+      role: z.string(),
+    }),
+  ),
+});
+export type Me = z.infer<typeof meSchema>;
+
 export const problemSchema = z.object({
   code: z.string(),
   message: z.string(),
@@ -125,5 +263,17 @@ export const envSchema = z.object({
   PGDATABASE: z.string().min(1).default('securerag'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   HOST: z.string().min(1).default('0.0.0.0'),
+  OIDC_ISSUER: z.string().min(1),
+  OIDC_CLIENT_ID: z.string().min(1),
+  OIDC_REDIRECT_URI: z.string().min(1),
+  OIDC_POST_LOGOUT_REDIRECT_URI: z.string().optional(),
+  OIDC_DISCOVERY_URL: z.string().optional(),
+  /** __Host- prefix rules: Secure is REQUIRED in production (default true);
+   * tests over plain HTTP set it to false and use the unprefixed cookie. */
+  SESSION_COOKIE_SECURE: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
+  SESSION_TTL_SECONDS: z.coerce.number().int().min(60).max(31_536_000).default(28_800),
 });
 export type Env = z.infer<typeof envSchema>;

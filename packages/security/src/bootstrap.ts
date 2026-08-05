@@ -46,9 +46,15 @@ async function acquire(poolOrClient: Pool | PoolClient): Promise<AcquiredClient>
  * Stage 1 of the two-stage bootstrap (ADR-0003): verify the authenticated
  * principal transaction-locally. Sets ONLY `securerag.principal_id` via
  * parameterized `set_config(..., true)`; the membership-scoped RLS policy then
- * reveals that principal's own rows and nothing else. A requested tenant is an
- * untrusted candidate, never authority — membership metadata is returned to
- * the caller so it can pick a tenant, but no tenant context is established.
+ * reveals that principal's own rows and nothing else. NOTE (S1): the policy's
+ * USING contains an admin OR-branch (needed by admin management flows), which
+ * would surface other principals' rows in the bootstrap listing for admins —
+ * so the bootstrap query pins `principal_id = ctx_principal_id()` itself.
+ * This is identity bootstrap (the documented stage-1 exception), deterministic,
+ * and keeps the admin view intact for stage-2 withSecurityContext flows.
+ * A requested tenant is an untrusted candidate, never authority — membership
+ * metadata is returned to the caller so it can pick a tenant, but no tenant
+ * context is established.
  *
  * Returns the callback's value plus the principal's active memberships
  * (SELECT tenant_id, membership_id, role FROM tenant_memberships WHERE
@@ -72,7 +78,8 @@ export async function withIdentityContext<T>(
     }>(
       `SELECT tenant_id, membership_id, role
          FROM securerag.tenant_memberships
-        WHERE is_active`,
+        WHERE is_active
+          AND principal_id = securerag.ctx_principal_id()`,
     );
     const memberships = rows.map((r) => ({
       tenantId: r.tenant_id,

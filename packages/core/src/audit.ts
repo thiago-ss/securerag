@@ -30,11 +30,11 @@ export async function appendAudit({ client, event }: AppendAuditParams): Promise
   await client.query(
     `INSERT INTO securerag.audit_events
        (tenant_id, event_type, request_id, principal_id, membership_id, auth_epoch,
-        redacted_query, query_hash, candidate_ids, scores, selected_ids,
+        redacted_query, query_hash, filters, candidate_ids, scores, selected_ids,
         evidence_decision, model_status, citations, refusal_reason, latency_ms, answer_hash)
      VALUES
        (securerag.ctx_tenant_id(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16)`,
+        $11, $12, $13, $14, $15, $16, $17)`,
     [
       event.eventType,
       event.requestId,
@@ -43,6 +43,7 @@ export async function appendAudit({ client, event }: AppendAuditParams): Promise
       event.authEpoch,
       event.redactedQuery ?? null,
       event.queryHash ?? null,
+      jsonOrNull(event.filters),
       jsonOrNull(event.candidateIds),
       jsonOrNull(event.scores),
       jsonOrNull(event.selectedIds),
@@ -67,6 +68,7 @@ interface AuditRow {
   auth_epoch: string;
   redacted_query: string | null;
   query_hash: Buffer | null;
+  filters: unknown;
   candidate_ids: string[] | null;
   scores: number[] | null;
   selected_ids: string[] | null;
@@ -90,6 +92,7 @@ function toRecord(row: AuditRow): AuditRecord {
     authEpoch: row.auth_epoch,
     redactedQuery: row.redacted_query,
     queryHash: row.query_hash,
+    filters: (row.filters ?? null) as AuditRecord['filters'],
     candidateIds: row.candidate_ids,
     scores: row.scores,
     selectedIds: row.selected_ids,
@@ -116,9 +119,9 @@ export async function listAudit(pool: Pool, params: ListAuditParams): Promise<Au
   return withSecurityContext(pool, params, async (client) => {
     const { rows } = await client.query<AuditRow>(
       `SELECT event_id, tenant_id, event_type, occurred_at, request_id, principal_id,
-              membership_id, auth_epoch, redacted_query, query_hash, candidate_ids,
-              scores, selected_ids, evidence_decision, model_status, citations,
-              refusal_reason, latency_ms, answer_hash
+              membership_id, auth_epoch, redacted_query, query_hash, filters,
+              candidate_ids, scores, selected_ids, evidence_decision, model_status,
+              citations, refusal_reason, latency_ms, answer_hash
          FROM securerag.audit_events
         ORDER BY event_id DESC
         LIMIT $1`,

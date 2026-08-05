@@ -44,13 +44,16 @@ export interface SecurityParams {
   requestId: string;
 }
 
-/** T3 audit subset (contract §Audit events). */
+/** T3 audit subset (contract §Audit events) extended by S1 admin events. */
 export type AuditEventType =
   | 'retrieval:allowed'
   | 'retrieval:denied'
   | 'retrieval:refused'
   | 'document:read'
-  | 'citation:resolved';
+  | 'citation:resolved'
+  | 'membership:changed'
+  | 'group:changed'
+  | 'grant:changed';
 
 /**
  * Audit event payload. tenant_id and occurred_at come from the database; never
@@ -65,6 +68,8 @@ export interface AuditEvent {
   authEpoch: string;
   redactedQuery?: string;
   queryHash?: Buffer;
+  /** Admin events: redacted change metadata (target uuids / roles / names). */
+  filters?: Record<string, unknown>;
   candidateIds?: string[];
   scores?: number[];
   selectedIds?: string[];
@@ -88,6 +93,7 @@ export interface AuditRecord {
   authEpoch: string;
   redactedQuery: string | null;
   queryHash: Buffer | null;
+  filters: Record<string, unknown> | null;
   candidateIds: string[] | null;
   scores: number[] | null;
   selectedIds: string[] | null;
