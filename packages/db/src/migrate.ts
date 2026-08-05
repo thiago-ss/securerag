@@ -45,6 +45,16 @@ export async function applyMigrations(
     );
     const applied = new Map(rows.rows.map((r) => [r.filename, r.checksum]));
 
+    const stored = new Set(applied.keys());
+    const onDisk = new Set(files);
+    for (const filename of stored) {
+      if (!onDisk.has(filename)) {
+        throw new Error(
+          `migration drift: ${filename} was applied but no longer exists in ${dir}`,
+        );
+      }
+    }
+
     for (const file of files) {
       const content = await readFile(path.join(dir, file), 'utf8');
       const checksum = createHash('sha256').update(content).digest('hex');

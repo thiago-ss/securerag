@@ -209,16 +209,6 @@ CREATE TABLE securerag.audit_events (
   PRIMARY KEY (tenant_id, event_id)
 );
 
--- ---------- Views (security_invoker) ----------
-
--- Tenants the context principal administers (reads the admin mirror; used by
--- the memberships RLS policy without re-entering tenant_memberships).
-CREATE VIEW securerag.admin_scope
-WITH (security_invoker) AS
-SELECT DISTINCT tenant_id
-FROM securerag.tenant_admins
-WHERE principal_id = current_setting('securerag.principal_id', true)::uuid;
-
 -- ---------- Functions (invoker rights only; never SECURITY DEFINER) ----------
 
 -- Context helpers: unset custom GUCs read as '' with missing_ok, so normalize to
@@ -254,12 +244,28 @@ AS $$
   )
 $$;
 
+-- Monotonic authorization epoch bump. SECURITY DEFINER (owned by the NOLOGIN
+-- owner; see ADR-0013): the ONLY legal write path for the epoch, because runtime
+-- roles hold no UPDATE on authorization_epoch. Tiny interface (no arguments),
+-- pinned search_path, PUBLIC execute revoked in 0003.
 CREATE FUNCTION securerag.bump_authorization_epoch()
 RETURNS bigint
 LANGUAGE sql
+SECURITY DEFINER
+SET search_path = securerag, pg_catalog
 PARALLEL SAFE
 AS $$
   UPDATE securerag.authorization_epoch SET epoch = epoch + 1 RETURNING epoch;
 $$;
+
+-- ---------- Views (security_invoker) ----------
+
+-- Tenants the context principal administers (reads the admin mirror; used by
+-- admin management flows without re-entering tenant_memberships).
+CREATE VIEW securerag.admin_scope
+WITH (security_invoker) AS
+SELECT DISTINCT tenant_id
+FROM securerag.tenant_admins
+WHERE principal_id = securerag.ctx_principal_id();
 
 RESET ROLE;
