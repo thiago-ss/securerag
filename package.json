@@ -17,6 +17,10 @@
     "test:db": "npm run test --workspace @securerag/db",
     "test:db:catalog": "npm run test:catalog --workspace @securerag/db",
     "test:api": "npm run test --workspace @securerag/api",
-    "test:security": "npm run test --workspace @securerag/eval && npm run test --workspace @securerag/api && npm run test --workspace @securerag/security"
+    "test:security": "npm run test --workspace @securerag/eval && npm run test --workspace @securerag/api && npm run test --workspace @securerag/security",
+    "web:dev": "npm run dev --workspace @securerag/web",
+    "demo": "docker compose -f ops/compose.yml up --build -d",
+    "demo:seed": "tsx ops/seed-demo.ts",
+    "benchmark": "npm run bench --workspace @securerag/eval"
   }
 }

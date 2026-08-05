@@ -1,0 +1,21 @@
+# SecureRAG demo reverse proxy (caddy, pinned in compose.yml).
+# Same-origin convention: the console lives at / and talks to /api/*; the
+# API never sees the outside world directly. OIDC redirect_uri must match
+# http://localhost:8080/api/auth/callback (see ops/keycloak-realm.json).
+
+{
+	admin off
+	auto_https off
+}
+
+:80 {
+	encode zstd gzip
+
+	handle_path /api/* {
+		reverse_proxy api:3000
+	}
+
+	handle {
+		reverse_proxy web:4173
+	}
+}

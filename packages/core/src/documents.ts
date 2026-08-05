@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { withSecurityContext } from '@securerag/security';
 import { appendAudit } from './audit.js';
-import { grantPredicateSql } from './grants.js';
+import { grantPredicateSql, grantSubjectMatchSql, manageGateSql } from './grants.js';
 import { DEFAULT_PII_CONFIG, redactForSurface, type PiiConfig } from './redaction.js';
 import type { Citation, SecurityParams } from './types.js';
 
@@ -9,6 +9,15 @@ export interface DocumentInfo {
   documentId: string;
   title: string;
   status: string;
+}
+
+/** One document-library row: metadata plus the requesting principal's
+ * deterministic capabilities (default-deny: the row only exists when the
+ * principal holds at least one grant, or manages it as tenant admin). */
+export interface DocumentListItem extends DocumentInfo {
+  canRead: boolean;
+  canWrite: boolean;
+  canManage: boolean;
 }
 
 export interface VersionInfo {
@@ -28,10 +37,11 @@ export interface GetDocumentParams extends SecurityParams {
  * Authorized document metadata (title/status only — never content). Foreign
  * and nonexistent documents are indistinguishable: both return null, and no
  * audit event is written for a denial (no enumerable signal). Retention
- * visibility (S9, ADR-0010): a document whose EVERY version is expired is
- * non-retrievable — the EXISTS below requires at least one non-expired
- * version, so a fully retention-expired document returns null exactly like a
- * foreign one.
+ * visibility (S9, ADR-0010): a document any of whose versions is NOT expired
+ * stays visible; a fully retention-expired document returns null exactly like
+ * a foreign one. A freshly created document (no versions yet) is visible —
+ * it carries no content to leak, and the console's create → upload flow
+ * depends on it (S10).
  */
 export async function getDocument(
   pool: Pool,
@@ -46,11 +56,11 @@ export async function getDocument(
       `SELECT d.document_id, d.title, d.status
          FROM securerag.documents d
         WHERE d.document_id = $1
-          AND EXISTS (
+          AND NOT EXISTS (
             SELECT 1 FROM securerag.document_versions v
              WHERE v.tenant_id = d.tenant_id
                AND v.document_id = d.document_id
-               AND v.status <> 'expired')
+               AND v.status = 'expired')
           AND ${grantPredicateSql('d.document_id', 'securerag.ctx_tenant_id()')}`,
       [params.documentId],
     );
@@ -67,6 +77,135 @@ export async function getDocument(
       },
     });
     return { documentId: row.document_id, title: row.title, status: row.status };
+  });
+}
+
+export interface ListDocumentsParams extends SecurityParams {}
+
+/**
+ * Document library listing (S10 console). Default-deny: a row is visible only
+ * when the principal holds ANY grant on the document (read/write/manage all
+ * imply read per ADR-0003) or manages it as an active tenant admin; the
+ * capability flags are computed with the same SQL predicates used by every
+ * other surface, so the library can never drift from the enforcement path.
+ * Retention visibility (S9): a document any of whose versions is NOT expired
+ * stays visible; a fully expired document is absent from the library (and a
+ * freshly created zero-version document is visible — it carries no content).
+ * Metadata only — never content. Foreign and nonexistent tenants surface as
+ * an empty list plus a MembershipError for non-members (indistinguishable
+ * 404 at the API).
+ */
+export async function listDocuments(
+  pool: Pool,
+  params: ListDocumentsParams,
+): Promise<DocumentListItem[]> {
+  return withSecurityContext(pool, params, async (client) => {
+    const { rows } = await client.query<{
+      document_id: string;
+      title: string;
+      status: string;
+      can_read: boolean;
+      can_write: boolean;
+      can_manage: boolean;
+    }>(
+      `SELECT d.document_id, d.title, d.status,
+              ${grantPredicateSql('d.document_id', 'securerag.ctx_tenant_id()')} AS can_read,
+              EXISTS (
+                SELECT 1 FROM securerag.document_grants g
+                 WHERE g.tenant_id = securerag.ctx_tenant_id()
+                   AND g.document_id = d.document_id
+                   AND g.capability IN ('write','manage')
+                   AND ${grantSubjectMatchSql('g')}) AS can_write,
+              ${manageGateSql('d.document_id', 'securerag.ctx_tenant_id()')} AS can_manage
+         FROM securerag.documents d
+        WHERE d.tenant_id = securerag.ctx_tenant_id()
+          AND (
+            ${grantPredicateSql('d.document_id', 'securerag.ctx_tenant_id()')}
+            OR ${manageGateSql('d.document_id', 'securerag.ctx_tenant_id()')})
+          AND NOT EXISTS (
+            SELECT 1 FROM securerag.document_versions v
+             WHERE v.tenant_id = d.tenant_id
+               AND v.document_id = d.document_id
+               AND v.status = 'expired')
+        ORDER BY d.title`,
+    );
+    return rows.map((row) => ({
+      documentId: row.document_id,
+      title: row.title,
+      status: row.status,
+      canRead: row.can_read,
+      canWrite: row.can_write,
+      canManage: row.can_manage,
+    }));
+  });
+}
+
+export interface CreateDocumentParams extends SecurityParams {
+  title: string;
+}
+
+/**
+ * Create a document inside the verified tenant (S10 console). Any active
+ * member may create (the RLS WITH CHECK pins tenant_id to the verified
+ * context); the creator immediately receives a 'manage' grant on the new
+ * document so the console's upload flow (manage-gated) can proceed, exactly
+ * like a grant written through addGrant: audited 'grant:changed', epoch
+ * bumped. The creation itself is audited 'document:created'. A non-member /
+ * foreign tenant surfaces as null via MembershipError (indistinguishable).
+ */
+export async function createDocument(
+  pool: Pool,
+  params: CreateDocumentParams,
+): Promise<DocumentInfo | null> {
+  return withSecurityContext(pool, params, async (client, ctx) => {
+    const { rows } = await client.query<{ document_id: string; status: string }>(
+      `INSERT INTO securerag.documents (tenant_id, title)
+       VALUES (securerag.ctx_tenant_id(), $1)
+       RETURNING document_id, status`,
+      [params.title],
+    );
+    const row = rows[0];
+    if (row === undefined) return null;
+    await client.query(
+      `INSERT INTO securerag.document_grants
+         (tenant_id, document_id, subject_type, subject_id, capability)
+       VALUES (securerag.ctx_tenant_id(), $1, 'principal',
+               securerag.ctx_principal_id()::text, 'manage')
+       ON CONFLICT DO NOTHING`,
+      [row.document_id],
+    );
+    const bumped = await client.query<{ epoch: string }>(
+      'SELECT securerag.bump_authorization_epoch() AS epoch',
+    );
+    const epoch = bumped.rows[0]?.epoch ?? ctx.authEpoch;
+    await appendAudit({
+      client,
+      event: {
+        eventType: 'document:created',
+        requestId: params.requestId,
+        principalId: ctx.principalId,
+        membershipId: ctx.membershipId,
+        authEpoch: epoch,
+        filters: { documentId: row.document_id },
+      },
+    });
+    await appendAudit({
+      client,
+      event: {
+        eventType: 'grant:changed',
+        requestId: params.requestId,
+        principalId: ctx.principalId,
+        membershipId: ctx.membershipId,
+        authEpoch: epoch,
+        filters: {
+          documentId: row.document_id,
+          subjectType: 'principal',
+          subjectId: ctx.principalId,
+          capability: 'manage',
+        },
+      },
+    });
+    return { documentId: row.document_id, title: params.title, status: row.status };
   });
 }
 

@@ -137,6 +137,10 @@ export interface RecallCorpusOptions {
   embeddings?: EmbeddingProvider;
   /** Where the narrow-ACL grants sit: 'spread' (baseline) or 'prefix' (authz tests). */
   narrowMode?: 'spread' | 'prefix';
+  /** Subject prefix for the corpus principals (provider, external_subject)
+   * is unique, so multi-tenant builders (S10 benchmark) need distinct
+   * subjects per corpus. Default 'recall'. */
+  subjectPrefix?: string;
 }
 
 export async function buildRecallCorpus(
@@ -159,11 +163,12 @@ export async function buildRecallCorpus(
     [tenantId],
   );
 
+  const prefix = options.subjectPrefix ?? 'recall';
   const principals = await pool.query<{ principal_id: string }>(
     `INSERT INTO securerag.principals (principal_id, provider, external_subject, display_name) VALUES
-       (gen_random_uuid(), 'test-issuer', 'recall-full-sub', 'Recall Full'),
-       (gen_random_uuid(), 'test-issuer', 'recall-narrow10-sub', 'Recall Narrow10'),
-       (gen_random_uuid(), 'test-issuer', 'recall-narrow1-sub', 'Recall Narrow1')
+       (gen_random_uuid(), 'test-issuer', '${prefix}-full-sub', 'Recall Full'),
+       (gen_random_uuid(), 'test-issuer', '${prefix}-narrow10-sub', 'Recall Narrow10'),
+       (gen_random_uuid(), 'test-issuer', '${prefix}-narrow1-sub', 'Recall Narrow1')
      RETURNING principal_id`,
   );
   const [full, narrow10, narrow1] = principals.rows;

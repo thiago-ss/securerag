@@ -9,7 +9,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench": "tsx src/bench.ts"
   },
   "dependencies": {
     "@securerag/core": "^0.1.0",

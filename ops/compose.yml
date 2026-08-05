@@ -1,0 +1,219 @@
+# SecureRAG local demo stack (ADR-0011). One command:
+#   cp ops/.env.example ops/.env && docker compose -f ops/compose.yml up --build
+# Console: http://localhost:8080  (Keycloak admin: http://localhost:8180)
+# Images pinned by tag; demo passwords come from ops/.env (never committed).
+# Production posture differs (hardened images, TLS, SSE-S3 via KES, OTel
+# OTLP) — see docs/ops/envelope.md and docs/ops/*.md runbooks.
+
+name: securerag
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.6-pg18
+    environment:
+      POSTGRES_DB: securerag
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in ops/.env}
+      SECURERAG_MIGRATION_PASSWORD: ${SECURERAG_MIGRATION_PASSWORD:?set in ops/.env}
+      SECURERAG_API_PASSWORD: ${SECURERAG_API_PASSWORD:?set in ops/.env}
+      SECURERAG_WORKER_PASSWORD: ${SECURERAG_WORKER_PASSWORD:?set in ops/.env}
+      SECURERAG_AUDIT_RETENTION_PASSWORD: ${SECURERAG_AUDIT_RETENTION_PASSWORD:?set in ops/.env}
+      SECURERAG_PURGE_PASSWORD: ${SECURERAG_PURGE_PASSWORD:?set in ops/.env}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set in ops/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init-db.sh:/docker-entrypoint-initdb.d/001-init.sh:ro
+      - ../packages/db/migrations/bootstrap/0001_roles_and_extensions.sql:/bootstrap/0001_roles_and_extensions.sql:ro
+    ports:
+      # host port for the demo seed script (npm run demo:seed) and ops tooling
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d securerag"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    image: securerag-api:demo
+    build:
+      context: ..
+      dockerfile: ops/docker/Dockerfile.api
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: securerag
+      PGUSER: securerag_migration
+      PGPASSWORD: ${SECURERAG_MIGRATION_PASSWORD:?set in ops/.env}
+    command: ["npx", "tsx", "packages/db/src/cli.ts", "up"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-demo}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set in ops/.env}
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-demo}
+    volumes:
+      - ./keycloak-realm.json:/opt/keycloak/data/import/securerag-demo.json:ro
+    ports:
+      - "8180:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    mem_limit: 2g
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in ops/.env}
+      # DEMO-ONLY static KMS key so SSE-S3 requests work without KES.
+      # Production uses KES + an operator-managed key (docs/ops/envelope.md).
+      MINIO_KMS_SECRET_KEY: ${MINIO_KMS_SECRET_KEY:?set in ops/.env}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  mc-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD &&
+        mc mb --ignore-existing local/securerag-objects &&
+        mc anonymous set none local/securerag-objects &&
+        echo "bucket securerag-objects ready"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in ops/.env}
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: securerag-api:demo
+    build:
+      context: ..
+      dockerfile: ops/docker/Dockerfile.api
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: securerag
+      PGUSER: securerag_api
+      PGPASSWORD: ${SECURERAG_API_PASSWORD:?set in ops/.env}
+      HOST: 0.0.0.0
+      PORT: 3000
+      OIDC_ISSUER: ${OIDC_ISSUER}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI}
+      OIDC_POST_LOGOUT_REDIRECT_URI: ${OIDC_POST_LOGOUT_REDIRECT_URI}
+      OIDC_DISCOVERY_URL: ${OIDC_DISCOVERY_URL}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      SOURCE_STORE: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-securerag-objects}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in ops/.env}
+      S3_FORCE_PATH_STYLE: "true"
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: securerag-api
+      OTEL_EXPORTER: ${OTEL_EXPORTER:-console}
+      OTEL_OTLP_ENDPOINT: ${OTEL_OTLP_ENDPOINT:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+      mc-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  worker:
+    image: securerag-worker:demo
+    build:
+      context: ..
+      dockerfile: ops/docker/Dockerfile.worker
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: securerag
+      WORKER_USER: securerag_worker
+      WORKER_PASSWORD: ${SECURERAG_WORKER_PASSWORD:?set in ops/.env}
+      PURGE_USER: securerag_purge
+      PURGE_PASSWORD: ${SECURERAG_PURGE_PASSWORD:?set in ops/.env}
+      POLL_INTERVAL_MS: 2000
+      SOURCE_STORE: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-securerag-objects}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in ops/.env}
+      S3_FORCE_PATH_STYLE: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      mc-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  web:
+    image: securerag-web:demo
+    build:
+      context: ..
+      dockerfile: ops/docker/Dockerfile.web
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2.10.2-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - web
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  minio-data:
