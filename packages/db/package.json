@@ -1,0 +1,25 @@
+{
+  "name": "@securerag/db",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SecureRAG database: migrations, RLS policies, catalog tests",
+  "type": "module",
+  "engines": { "node": ">=22.22" },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:catalog": "vitest run test/catalog.test.ts test/migrate.test.ts",
+    "migrate:up": "tsx src/cli.ts up",
+    "migrate:down": "tsx src/cli.ts down"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.4",
+    "testcontainers": "^12.1.0",
+    "tsx": "^4.23.6",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
