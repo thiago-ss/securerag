@@ -28,8 +28,8 @@ export {
 } from './redaction.js';
 export {
   addGrant,
-  canManage,
   canRead,
+  canManage,
   grantPredicateSql,
   listGrants,
   managePredicateSql,
@@ -174,8 +174,35 @@ export {
 } from './purge.js';
 export {
   InMemorySourceObjectStore,
+  S3SourceObjectStore,
+  sanitizeFilename,
+  sourceObjectKey,
   type SourceObjectStore,
+  type S3SourceObjectStoreConfig,
 } from './storage.js';
+export {
+  INGEST_CHUNK_OVERLAP,
+  INGEST_CHUNK_SIZE,
+  INGEST_MAX_SOURCE_BYTES,
+  INGEST_SERVICE_MEMBERSHIP,
+  INGEST_SERVICE_PRINCIPAL,
+  IngestPermanentFailure,
+  IngestRetryableFailure,
+  chunkText,
+  extractFailureReason,
+  getJobStatus,
+  getSourceObjectKey,
+  parsePayload,
+  runIngestion,
+  stageUpload,
+  type IngestDeps,
+  type IngestJobPayload,
+  type IngestOutcome,
+  type IngestParams,
+  type JobStatus,
+  type StageUploadParams,
+  type StageUploadResult,
+} from './ingestion.js';
 export type {
   AnsweredOutcome,
   AuditEvent,

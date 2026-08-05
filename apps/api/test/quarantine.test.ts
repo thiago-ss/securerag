@@ -5,6 +5,7 @@ import type { Pool } from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { SpyGenerator, type SpyRecord } from '@securerag/providers';
 import { FakeOidcProvider } from '@securerag/security/src/testkit.js';
+import { InMemorySourceObjectStore } from '@securerag/core';
 import {
   getTestDb,
   resetData,
@@ -59,6 +60,7 @@ describe('S5 quarantine API over real HTTP with OIDC sessions', () => {
     app = await buildApp({
       pool: api,
       providers: spy,
+      store: new InMemorySourceObjectStore(),
       oidc: {
         issuer: 'test-issuer',
         clientId: 'securerag-api',

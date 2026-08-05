@@ -62,7 +62,15 @@ export type AuditEventType =
   | 'retention:changed'
   | 'purge:completed'
   | 'purge:blocked'
-  | 'audit:purged';
+  | 'audit:purged'
+  | 'ingest:received'
+  | 'ingest:scanned'
+  | 'ingest:extracted'
+  | 'ingest:redacted'
+  | 'ingest:chunked'
+  | 'ingest:verified'
+  | 'ingest:published'
+  | 'ingest:rejected';
 
 /**
  * Audit event payload. tenant_id and occurred_at come from the database; never

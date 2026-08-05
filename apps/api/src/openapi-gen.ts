@@ -1,6 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import pg from 'pg';
 import YAML from 'yaml';
+import { InMemorySourceObjectStore } from '@securerag/core';
 import { SpyGenerator } from '@securerag/providers';
 import { buildApp } from './app.js';
 
@@ -24,6 +25,7 @@ try {
   const app = await buildApp({
     pool,
     providers: new SpyGenerator(),
+    store: new InMemorySourceObjectStore(),
     oidc: {
       issuer: 'https://id.example.invalid',
       clientId: 'securerag-api',

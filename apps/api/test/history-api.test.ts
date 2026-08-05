@@ -4,6 +4,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Pool } from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { SpyGenerator } from '@securerag/providers';
+import { InMemorySourceObjectStore } from '@securerag/core';
 import { FakeOidcProvider } from '@securerag/security/src/testkit.js';
 import {
   getTestDb,
@@ -79,7 +80,12 @@ describe('S3 ACL + history endpoints over HTTP', () => {
       sessionTtlSeconds: 3600,
       postLoginRedirectPath: '/',
     };
-    app = await buildApp({ pool: api, providers: new SpyGenerator(), oidc });
+    app = await buildApp({
+      pool: api,
+      providers: new SpyGenerator(),
+      oidc,
+      store: new InMemorySourceObjectStore(),
+    });
     await app.listen({ port: 0, host: '127.0.0.1' });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   });

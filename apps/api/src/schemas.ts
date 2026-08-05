@@ -33,6 +33,39 @@ export type VersionParams = z.infer<typeof versionParamsSchema>;
 export const citationParamsSchema = z.object({ citationId: uuidSchema });
 export type CitationParams = z.infer<typeof citationParamsSchema>;
 
+// ---------- S2 ingestion boundaries (ADR-0007) ----------
+
+/** Multipart upload target: document + file part. Size is bounded by
+ * @fastify/multipart limits (50 MB) before the handler runs. */
+export const uploadParamsSchema = z.object({ id: uuidSchema });
+export type UploadParams = z.infer<typeof uploadParamsSchema>;
+
+export const uploadResponseSchema = z.object({
+  jobId: z.string(),
+  documentId: z.string(),
+  versionId: z.string(),
+  status: z.string(),
+});
+
+/** Authorized source stream target: document + version. */
+export const sourceParamsSchema = z.object({
+  id: uuidSchema,
+  versionId: uuidSchema,
+});
+export type SourceParams = z.infer<typeof sourceParamsSchema>;
+
+export const jobParamsSchema = z.object({ jobId: uuidSchema });
+export type JobParams = z.infer<typeof jobParamsSchema>;
+
+/** Opaque job status (own tenant only): ids + lifecycle state, no payload. */
+export const jobStatusSchema = z.object({
+  jobId: z.string(),
+  jobType: z.string(),
+  status: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
 export const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
 });
@@ -398,5 +431,16 @@ export const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true' || v === '1'),
   SESSION_TTL_SECONDS: z.coerce.number().int().min(60).max(31_536_000).default(28_800),
+  /** S2 object storage seam (ADR-0007): memory for CI/demo; s3 behind S3_* config. */
+  SOURCE_STORE: z.enum(['memory', 's3']).default('memory'),
+  S3_ENDPOINT: z.string().optional(),
+  S3_REGION: z.string().default('us-east-1'),
+  S3_BUCKET: z.string().default('securerag-objects'),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
+  S3_FORCE_PATH_STYLE: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
 });
 export type Env = z.infer<typeof envSchema>;

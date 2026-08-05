@@ -11,6 +11,7 @@ import type { Pool } from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { SpyGenerator, type SpyRecord } from '@securerag/providers';
 import { FakeOidcProvider } from '@securerag/security/src/testkit.js';
+import { InMemorySourceObjectStore } from '@securerag/core';
 import { getTestDb, resetData, type TestDb } from '@securerag/db/src/testkit.js';
 import { buildApp } from '../src/app.js';
 import { loginViaOidc, type AuthenticatedSession } from './auth-helpers.js';
@@ -42,6 +43,7 @@ describe('S4 API E2E — pii-doc retrieval is answered with a redacted context',
     app = await buildApp({
       pool: api,
       providers: spy,
+      store: new InMemorySourceObjectStore(),
       facts: () => world.facts,
       oidc: {
         issuer: 'test-issuer',

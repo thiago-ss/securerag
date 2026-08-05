@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { SpyGenerator, type SpyRecord } from '@securerag/providers';
 import { FakeOidcProvider } from '@securerag/security/src/testkit.js';
+import { InMemorySourceObjectStore } from '@securerag/core';
 import { getTestDb, resetData, seedFixtures, type TestDb } from '@securerag/db/src/testkit.js';
 import { buildApp } from '../src/app.js';
 import { loginViaOidc } from '../src/testkit.js';
@@ -26,6 +27,7 @@ describe('S9 retention policy over HTTP with OIDC sessions', () => {
     app = await buildApp({
       pool: db.apiPool,
       providers: new SpyGenerator(records),
+      store: new InMemorySourceObjectStore(),
       facts: () => ({ tenants: [], principals: [], memberships: [], groups: [], groupMemberships: [], documents: [], versions: [], chunks: [], grants: [] }),
       oidc: {
         issuer: 'test-issuer',

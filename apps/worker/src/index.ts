@@ -2,15 +2,33 @@
  * Worker entry: claim -> execute -> complete/fail. Handlers re-enter the
  * verified tenant context (worker credential) before touching payloads; the
  * purge handler delegates to core runTenantPurge (expiry marking via the
- * worker credential, destructive deletes via the narrow purge credential).
+ * worker credential, destructive deletes via the narrow purge credential);
+ * the ingest handler delegates to core runIngestion (S2 pipeline, ADR-0007).
  */
 import type { Pool, PoolClient } from 'pg';
-import { runTenantPurge, type PurgeDeps } from '@securerag/core';
+import {
+  runTenantPurge,
+  runIngestion,
+  parsePayload,
+  IngestPermanentFailure,
+  type PurgeDeps,
+} from '@securerag/core';
+import type {
+  ExtractionProvider,
+  InjectionDetector,
+  MalwareScanner,
+} from '@securerag/providers';
+import type { EmbeddingProvider } from '@securerag/core';
 import { claimJobs, completeJob, failJob, type JobRow } from './queue.js';
 
 export interface WorkerDeps extends PurgeDeps {
   /** securerag_worker pool (queue claims + worker-context work). */
   workerPool: Pool;
+  /** S2 pipeline seams (ADR-0007). */
+  extractor: ExtractionProvider;
+  scanner: MalwareScanner;
+  detector: InjectionDetector;
+  embedding: EmbeddingProvider;
   jobTypes?: readonly string[];
 }
 
@@ -22,7 +40,7 @@ export interface WorkerRunResult {
 
 export type JobHandler = (client: PoolClient, job: JobRow) => Promise<void>;
 
-const JOB_TYPES = ['purge'] as const;
+const JOB_TYPES = ['purge', 'ingest'] as const;
 
 /** Purge handler: runs the tenant's retention purge (idempotent by design). */
 export function purgeHandler(deps: WorkerDeps): JobHandler {
@@ -35,9 +53,40 @@ export function purgeHandler(deps: WorkerDeps): JobHandler {
 }
 
 /**
+ * Ingest handler (S2): runs the ingestion pipeline for the claimed job. The
+ * job payload holds ONLY opaque ids + object metadata (r8 §4); the pipeline
+ * re-enters the tenant context and re-reads the version + object — the DB is
+ * the authority, never the payload.
+ */
+export function ingestHandler(deps: WorkerDeps): JobHandler {
+  return async (_client, job) => {
+    const payload = parsePayload(job.payload_key);
+    if (payload === null) {
+      throw new IngestPermanentFailure('invalid-job-payload');
+    }
+    await runIngestion(
+      {
+        workerPool: deps.workerPool,
+        store: deps.store,
+        extractor: deps.extractor,
+        scanner: deps.scanner,
+        detector: deps.detector,
+        embedding: deps.embedding,
+      },
+      {
+        tenantId: job.tenant_id,
+        requestId: job.job_id,
+        ...payload,
+      },
+    );
+  };
+}
+
+/**
  * One worker pass: claim up to `limit` jobs and execute them. Handler
- * failures are retryable by default (backoff) unless permanent. Returns
- * per-class counts. Used by tests and by the daemon loop.
+ * failures are retryable by default (backoff) unless permanent
+ * (IngestPermanentFailure from the S2 pipeline). Returns per-class counts.
+ * Used by tests and by the daemon loop.
  */
 export async function runWorkerOnce(
   deps: WorkerDeps,
@@ -60,10 +109,10 @@ export async function runWorkerOnce(
       await completeJob(client, job);
       await client.query('COMMIT');
       succeeded += 1;
-    } catch {
+    } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       await client.query('BEGIN');
-      await failJob(client, job, { retryable: true });
+      await failJob(client, job, { retryable: !(err instanceof IngestPermanentFailure) });
       await client.query('COMMIT');
       failed += 1;
     } finally {
@@ -78,6 +127,8 @@ function pickHandler(deps: WorkerDeps, jobType: string): JobHandler {
   switch (jobType) {
     case 'purge':
       return purgeHandler(deps);
+    case 'ingest':
+      return ingestHandler(deps);
     default:
       throw new Error(`unknown job type: ${jobType}`);
   }

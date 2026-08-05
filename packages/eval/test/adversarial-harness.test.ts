@@ -12,6 +12,7 @@ import type { Pool } from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { SpyGenerator, type SpyRecord } from '@securerag/providers';
 import { FakeOidcProvider } from '@securerag/security/src/testkit.js';
+import { InMemorySourceObjectStore } from '@securerag/core';
 import { getTestDb, resetData, type TestDb } from '@securerag/db/src/testkit.js';
 import { buildApp } from '@securerag/api/src/app.js';
 import { loginViaOidc } from '@securerag/api/src/testkit.js';
@@ -72,6 +73,7 @@ describe('ST: adversarial security-test lane (canary corpus + harness)', () => {
     app = await buildApp({
       pool: api,
       providers: spy,
+      store: new InMemorySourceObjectStore(),
       facts: () => world.facts,
       oidc: {
         issuer: 'test-issuer',

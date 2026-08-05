@@ -1,8 +1,23 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getTestDb, resetData, seedFixtures, type TestDb } from '@securerag/db/src/testkit.js';
-import { InMemorySourceObjectStore } from '@securerag/core';
-import { runWorkerOnce } from '../src/index.js';
+import {
+  DETERMINISTIC_EMBEDDING,
+  InMemorySourceObjectStore,
+} from '@securerag/core';
+import {
+  DETERMINISTIC_MALWARE_SCANNER,
+  HEURISTIC_INJECTION_DETECTOR,
+  STANDARD_EXTRACTION,
+} from '@securerag/providers';
+import { runWorkerOnce, type WorkerDeps } from '../src/index.js';
 import { claimJobs } from '../src/queue.js';
+
+const ingestSeams = {
+  extractor: STANDARD_EXTRACTION,
+  scanner: DETERMINISTIC_MALWARE_SCANNER,
+  detector: HEURISTIC_INJECTION_DETECTOR,
+  embedding: DETERMINISTIC_EMBEDDING,
+} as const;
 
 describe('S9 worker: queue claim loop and purge jobs on real runtime roles', () => {
   let db: TestDb;
@@ -65,7 +80,8 @@ describe('S9 worker: queue claim loop and purge jobs on real runtime roles', () 
       workerPool: db.workerPool,
       purgePool: db.purgePool,
       store,
-    }, { limit: 10 });
+      ...ingestSeams,
+    } as WorkerDeps, { limit: 10 });
     expect(result.claimed).toBeGreaterThanOrEqual(1);
     expect(result.failed).toBe(0);
     const { rows } = await db.superuserPool.query<{ status: string }>(
@@ -91,10 +107,11 @@ describe('S9 worker: queue claim loop and purge jobs on real runtime roles', () 
       [world.tenantA.id, `bogus-${Date.now()}`],
     );
     const jobId = inserted[0]!.job_id;
-    const deps = {
+    const deps: WorkerDeps = {
       workerPool: db.workerPool,
       purgePool: db.purgePool,
       store: new InMemorySourceObjectStore(),
+      ...ingestSeams,
       jobTypes: ['purge', 'bogus-type'],
     };
     for (let i = 0; i < 5; i += 1) {
