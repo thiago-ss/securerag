@@ -154,9 +154,17 @@ export const answeredOutcomeSchema = z.object({
   citations: z.array(citationSchema),
 });
 
+/** Stable refusal codes (ADR-0009): S7 adds CONFLICTING_EVIDENCE and CITATION_UNSUPPORTED. */
+export const refusalCodeSchema = z.enum([
+  'INSUFFICIENT_EVIDENCE',
+  'CONFLICTING_EVIDENCE',
+  'CITATION_UNSUPPORTED',
+]);
+export type RefusalCode = z.infer<typeof refusalCodeSchema>;
+
 export const refusedOutcomeSchema = z.object({
   decision: z.literal('refused'),
-  code: z.string(),
+  code: refusalCodeSchema,
   message: z.string(),
 });
 

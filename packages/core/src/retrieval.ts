@@ -7,10 +7,14 @@ import {
   type InjectionDetector,
 } from '@securerag/providers';
 import { appendAudit, sha256 } from './audit.js';
+import { decideCalibrated } from './calibration.js';
+import { detectConflicts } from './conflict.js';
+import { resolveCitationOn } from './documents.js';
 import { DETERMINISTIC_EMBEDDING, toVectorLiteral, type EmbeddingProvider } from './embeddings.js';
+import { generateWithGuarantee, type VerifyOutcome } from './generation.js';
 import { grantPredicateSql } from './grants.js';
 import { DEFAULT_PII_CONFIG, redactBundleChunks, redactQuestion, type PiiConfig } from './redaction.js';
-import { decide } from './refusal.js';
+import { verifyCitations } from './verifier.js';
 import type { AuditEvent, Citation, EvidenceChunk, RetrievalOutcome, SecurityParams } from './types.js';
 
 /**
@@ -54,6 +58,13 @@ export interface RetrievalDeps {
    * and processing continues unmodified.
    */
   injectionDetector?: InjectionDetector;
+  /**
+   * Audit appender for the FINAL retrieval:allowed event (S7 seam). Defaults
+   * to appendAudit. Injected only by tests that prove the ADR-0009 rule
+   * "audit-write failure returns no answer"; refusal events always use the
+   * real appender so a failing audit system cannot mask a refusal as a 500.
+   */
+  auditAppend?: typeof appendAudit;
 }
 
 export const RETRIEVAL_DEFAULT_LIMIT = 10;
@@ -386,7 +397,40 @@ async function detectAndAudit(
 }
 
 /**
- * End-to-end retrieval run (T3 contract §Domain contracts, S6 hybrid upgrade):
+ * Stale-epoch guard (ADR-0009 "Before the first response byte: authorization
+ * epoch rechecked"). withSecurityContext reads authorization_epoch once at
+ * transaction start (the epoch GUC); this re-reads the epoch inside the same
+ * transaction right before any decision/response and refuses when it changed
+ * — authorization may have moved under the retrieved bundle (revocation,
+ * epoch bump per ADR-0013). Under READ COMMITTED the fresh SELECT sees any
+ * epoch bump committed after our transaction started.
+ */
+export class StaleEpochError extends Error {
+  constructor(
+    readonly expectedEpoch: string,
+    readonly currentEpoch: string,
+  ) {
+    super(`authorization epoch changed during retrieval (${expectedEpoch} -> ${currentEpoch})`);
+    this.name = 'StaleEpochError';
+  }
+}
+
+export async function assertEpochCurrent(
+  client: PoolClient,
+  expectedEpoch: string,
+): Promise<void> {
+  const { rows } = await client.query<{ epoch: string }>(
+    `SELECT epoch FROM securerag.authorization_epoch`,
+  );
+  const current = rows[0]?.epoch;
+  if (current !== expectedEpoch) {
+    throw new StaleEpochError(expectedEpoch, current ?? '<uninitialized>');
+  }
+}
+
+/**
+ * End-to-end retrieval run (T3 contract §Domain contracts, S6 hybrid upgrade,
+ * S7 evidence calibration + deterministic refusal):
  *  1. withIdentityContext — the ONLY identity-context use: list the
  *     principal's active memberships; the requested tenant is an untrusted
  *     candidate, never authority.
@@ -396,10 +440,18 @@ async function detectAndAudit(
  *     (RLS-filtered rows; authorization never happens after SQL).
  *  4. Layer-7 detection signal: high-risk question -> 'injection:detected'
  *     audit event (query hash only); processing NEVER changes.
- *  5. decide(bundle, question) — below the calibrated threshold (or empty)
- *     yields refused INSUFFICIENT_EVIDENCE, audited, no generation.
- *  6. Otherwise the provider spy generates a deterministic answer that cites
- *     only provided citations; audited as retrieval:allowed.
+ *  5. Stale-epoch guard (assertEpochCurrent): a changed authorization epoch
+ *     refuses before any decision — the bundle may no longer be authorized.
+ *  6. decideCalibrated — below the calibrated threshold (or empty) yields
+ *     refused INSUFFICIENT_EVIDENCE, audited, no generation.
+ *  7. detectConflicts — deterministically conflicting evidence refuses with
+ *     CONFLICTING_EVIDENCE, audited, no generation.
+ *  8. Otherwise the provider spy generates a deterministic answer that cites
+ *     only provided citations; the citation verifier (bounded regeneration,
+ *     max 2 attempts, then CITATION_UNSUPPORTED) checks bundle membership,
+ *     claims-to-citations, and re-resolves every citation against current
+ *     authorization on this transaction. Audited as retrieval:allowed; an
+ *     audit-write failure returns a refusal, never the answer.
  * The audit event is written inside the protected transaction. Never answers
  * from memory; never exposes rows to application-side re-filtering.
  */
@@ -414,6 +466,7 @@ export async function runRetrieval(
   const embeddings = deps.embeddings ?? DETERMINISTIC_EMBEDDING;
   const pii = deps.pii ?? DEFAULT_PII_CONFIG;
   const injectionDetector = deps.injectionDetector ?? HEURISTIC_INJECTION_DETECTOR;
+  const auditAppend = deps.auditAppend ?? appendAudit;
 
   // S4: the redacted question is the ONLY form that reaches embedding, the
   // retrieval SQL, the provider payload, and audit (ADR-0005 placement 4/8).
@@ -462,7 +515,34 @@ export async function runRetrieval(
       latencyMs: clock() - started,
     } satisfies Partial<AuditEvent>;
 
-    if (decide(redactedBundle, questionRedacted) === 'INSUFFICIENT_EVIDENCE') {
+    // ADR-0009 epoch recheck, before ANY decision or response byte: re-read
+    // authorization_epoch in this transaction; a change refuses with
+    // INSUFFICIENT_EVIDENCE (the bundle may no longer be authorized).
+    try {
+      await assertEpochCurrent(client, ctx.authEpoch);
+    } catch (err) {
+      if (!(err instanceof StaleEpochError)) throw err;
+      await appendAudit({
+        client,
+        event: {
+          ...baseAudit,
+          eventType: 'retrieval:refused',
+          selectedIds: [],
+          evidenceDecision: 'refused',
+          refusalReason: 'INSUFFICIENT_EVIDENCE',
+        },
+      });
+      return {
+        decision: 'refused',
+        code: 'INSUFFICIENT_EVIDENCE',
+        message: 'Authorization epoch changed during retrieval; evidence may no longer be authorized.',
+      };
+    }
+
+    // S7 calibrated answerability gate (decide() hard floor + calibrated
+    // score threshold, ADR-0009): empty bundle, foreign-only bundle, a single
+    // authorized chunk, or a below-threshold composite all refuse here.
+    if (decideCalibrated(redactedBundle, questionRedacted) === 'INSUFFICIENT_EVIDENCE') {
       await appendAudit({
         client,
         event: {
@@ -480,6 +560,29 @@ export async function runRetrieval(
       };
     }
 
+    // S7 conflicting-evidence detector (deterministic, heuristic — limits
+    // documented in conflict.ts): authorized evidence that materially
+    // disagrees cannot support a claim.
+    const conflicts = detectConflicts(redactedBundle);
+    if (conflicts.length > 0) {
+      await appendAudit({
+        client,
+        event: {
+          ...baseAudit,
+          eventType: 'retrieval:refused',
+          selectedIds: [],
+          evidenceDecision: 'refused',
+          refusalReason: 'CONFLICTING_EVIDENCE',
+          filters: { conflicts: conflicts.map((c) => c.detail) },
+        },
+      });
+      return {
+        decision: 'refused',
+        code: 'CONFLICTING_EVIDENCE',
+        message: 'Authorized evidence conflicts and cannot support an answer.',
+      };
+    }
+
     const citations: Citation[] = redactedBundle.map((chunk) => ({
       documentId: chunk.documentId,
       versionId: chunk.versionId,
@@ -488,11 +591,75 @@ export async function runRetrieval(
       excerpt: chunk.text,
     }));
 
-    const generated = await deps.providers.generate({
-      question: questionRedacted,
-      bundle: redactedBundle.map((chunk) => ({ chunkId: chunk.chunkId, text: chunk.text })),
-      citations,
-    });
+    // S7 generation contract hardening (generation.ts): no-tools model,
+    // bounded regeneration (max 2), and a deterministic citation verifier
+    // independent of the model — pure membership/claims checks plus a
+    // DB-backed resolution recheck of CURRENT authorization for every
+    // returned citation (ADR-0009 §Citation verifier). Resolution runs on
+    // THIS transaction's client (no nested transaction; the epoch recheck
+    // above covers the epoch).
+    const bundleChunkIds = new Set(redactedBundle.map((chunk) => chunk.chunkId));
+    const verification = await generateWithGuarantee(
+      {
+        providers: deps.providers,
+        verify: async (result): Promise<VerifyOutcome> => {
+          const pure = verifyCitations({
+            answer: result.answer,
+            citations: result.citations,
+            bundleChunkIds,
+          });
+          if (!pure.ok) return pure;
+          for (const citation of result.citations) {
+            const resolved = await resolveCitationOn(
+              client,
+              {
+                tenantId: params.tenantId,
+                principalId: params.principalId,
+                requestId: params.requestId,
+                citationId: citation.chunkId,
+              },
+              ctx,
+              pii,
+            );
+            if (resolved === null) {
+              return {
+                ok: false,
+                issues: [
+                  `citation ${citation.chunkId} no longer resolves under current authorization (revoked/expired/foreign)`,
+                ],
+              };
+            }
+          }
+          return { ok: true };
+        },
+      },
+      {
+        question: questionRedacted,
+        bundle: redactedBundle.map((chunk) => ({ chunkId: chunk.chunkId, text: chunk.text })),
+        citations,
+      },
+    );
+
+    if (verification.decision === 'refused') {
+      await appendAudit({
+        client,
+        event: {
+          ...baseAudit,
+          eventType: 'retrieval:refused',
+          selectedIds: [],
+          evidenceDecision: 'refused',
+          refusalReason: 'CITATION_UNSUPPORTED',
+          modelStatus: 'failed',
+          filters: { issues: verification.issues },
+        },
+      });
+      return {
+        decision: 'refused',
+        code: 'CITATION_UNSUPPORTED',
+        message: 'Generated answer could not be verified against the evidence bundle.',
+      };
+    }
+    const generated = verification.result;
 
     // ADR-0005 placement 8: the generated answer is post-checked (defense-in-
     // depth) — a model that echoes or paraphrases PII never ships it raw, even
@@ -500,18 +667,28 @@ export async function runRetrieval(
     // correlation, but return only the redacted form.
     const answerRedacted = redactText(generated.answer, pii.detector.detect(generated.answer));
 
-    await appendAudit({
-      client,
-      event: {
-        ...baseAudit,
-        eventType: 'retrieval:allowed',
-        selectedIds: generated.citations.map((c) => c.chunkId),
-        evidenceDecision: 'answered',
-        modelStatus: 'ok',
-        citations: generated.citations,
-        answerHash: sha256(generated.answer),
-      },
-    });
+    // ADR-0009 "Audit-write failure returns no answer": if the final audit
+    // append fails, refuse — the answer is never returned un-audited.
+    try {
+      await auditAppend({
+        client,
+        event: {
+          ...baseAudit,
+          eventType: 'retrieval:allowed',
+          selectedIds: generated.citations.map((c) => c.chunkId),
+          evidenceDecision: 'answered',
+          modelStatus: 'ok',
+          citations: generated.citations,
+          answerHash: sha256(generated.answer),
+        },
+      });
+    } catch {
+      return {
+        decision: 'refused',
+        code: 'INSUFFICIENT_EVIDENCE',
+        message: 'Audit-write failed; no answer returned.',
+      };
+    }
 
     return {
       decision: 'answered',

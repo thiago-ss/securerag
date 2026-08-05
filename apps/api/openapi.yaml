@@ -1692,6 +1692,10 @@ paths:
                           - refused
                       code:
                         type: string
+                        enum:
+                          - INSUFFICIENT_EVIDENCE
+                          - CONFLICTING_EVIDENCE
+                          - CITATION_UNSUPPORTED
                       message:
                         type: string
                     required:

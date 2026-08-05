@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { withSecurityContext } from '@securerag/security';
 import { appendAudit } from './audit.js';
 import { grantPredicateSql } from './grants.js';
@@ -123,6 +123,75 @@ export interface ResolveCitationParams extends SecurityParams {
 }
 
 /**
+ * Resolve a citation to its authorized excerpt on an ALREADY-OPEN verified
+ * security-context client (S7). Re-checks CURRENT authorization (grant
+ * predicate) plus valid/current version visibility inside the caller's
+ * transaction — the retrieval pipeline uses this as the post-generation
+ * citation-resolution recheck (ADR-0009 §Citation verifier) without nesting a
+ * second transaction. Foreign and nonexistent citations are
+ * indistinguishable: null. Shared implementation with resolveCitation() so the
+ * two paths can never drift; the citation:resolved audit event is written
+ * exactly as in the pooled path.
+ */
+export async function resolveCitationOn(
+  client: PoolClient,
+  params: ResolveCitationParams,
+  ctx: import('@securerag/security').SecurityContext,
+  pii: PiiConfig = DEFAULT_PII_CONFIG,
+): Promise<Citation | null> {
+  const principal = await client.query<{ pii_read: boolean }>(
+    `SELECT pii_read
+       FROM securerag.principals
+      WHERE principal_id = securerag.ctx_principal_id()`,
+  );
+  const piiRead = principal.rows[0]?.pii_read ?? false;
+
+  const { rows } = await client.query<{
+    chunk_id: string;
+    chunk_no: number;
+    text_redacted: string;
+    span_start: number;
+    span_end: number;
+    version_id: string;
+    version_no: number;
+    document_id: string;
+  }>(
+    `SELECT c.chunk_id, c.chunk_no, c.text_redacted, c.span_start, c.span_end,
+            v.version_id, v.version_no, d.document_id
+       FROM securerag.chunks c
+       JOIN securerag.document_versions v
+         ON v.tenant_id = c.tenant_id AND v.version_id = c.version_id
+       JOIN securerag.documents d
+         ON d.tenant_id = v.tenant_id AND d.document_id = v.document_id
+      WHERE c.chunk_id = $1
+        AND v.status IN ('valid','released')
+        AND v.is_current
+        AND ${grantPredicateSql('d.document_id', 'securerag.ctx_tenant_id()')}`,
+    [params.citationId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  await appendAudit({
+    client,
+    event: {
+      eventType: 'citation:resolved',
+      requestId: params.requestId,
+      principalId: ctx.principalId,
+      membershipId: ctx.membershipId,
+      authEpoch: ctx.authEpoch,
+      candidateIds: [row.chunk_id],
+    },
+  });
+  return {
+    documentId: row.document_id,
+    versionId: row.version_id,
+    chunkId: row.chunk_id,
+    span: { start: row.span_start, end: row.span_end },
+    excerpt: redactForSurface(row.text_redacted, pii, piiRead),
+  };
+}
+
+/**
  * Resolve a citation to its authorized excerpt. Re-checks CURRENT
  * authorization (grant predicate) plus valid/current version visibility
  * inside a fresh withSecurityContext (ADR-0009 epoch recheck). Foreign and
@@ -139,56 +208,7 @@ export async function resolveCitation(
   params: ResolveCitationParams,
   pii: PiiConfig = DEFAULT_PII_CONFIG,
 ): Promise<Citation | null> {
-  return withSecurityContext(pool, params, async (client, ctx) => {
-    const principal = await client.query<{ pii_read: boolean }>(
-      `SELECT pii_read
-         FROM securerag.principals
-        WHERE principal_id = securerag.ctx_principal_id()`,
-    );
-    const piiRead = principal.rows[0]?.pii_read ?? false;
-
-    const { rows } = await client.query<{
-      chunk_id: string;
-      chunk_no: number;
-      text_redacted: string;
-      span_start: number;
-      span_end: number;
-      version_id: string;
-      version_no: number;
-      document_id: string;
-    }>(
-      `SELECT c.chunk_id, c.chunk_no, c.text_redacted, c.span_start, c.span_end,
-              v.version_id, v.version_no, d.document_id
-         FROM securerag.chunks c
-         JOIN securerag.document_versions v
-           ON v.tenant_id = c.tenant_id AND v.version_id = c.version_id
-         JOIN securerag.documents d
-           ON d.tenant_id = v.tenant_id AND d.document_id = v.document_id
-        WHERE c.chunk_id = $1
-          AND v.status IN ('valid','released')
-          AND v.is_current
-          AND ${grantPredicateSql('d.document_id', 'securerag.ctx_tenant_id()')}`,
-      [params.citationId],
-    );
-    const row = rows[0];
-    if (!row) return null;
-    await appendAudit({
-      client,
-      event: {
-        eventType: 'citation:resolved',
-        requestId: params.requestId,
-        principalId: ctx.principalId,
-        membershipId: ctx.membershipId,
-        authEpoch: ctx.authEpoch,
-        candidateIds: [row.chunk_id],
-      },
-    });
-    return {
-      documentId: row.document_id,
-      versionId: row.version_id,
-      chunkId: row.chunk_id,
-      span: { start: row.span_start, end: row.span_end },
-      excerpt: redactForSurface(row.text_redacted, pii, piiRead),
-    };
-  });
+  return withSecurityContext(pool, params, (client, ctx) =>
+    resolveCitationOn(client, params, ctx, pii),
+  );
 }

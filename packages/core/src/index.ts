@@ -9,6 +9,7 @@ export {
   getDocument,
   getVersion,
   resolveCitation,
+  resolveCitationOn,
   type DocumentInfo,
   type GetDocumentParams,
   type GetVersionParams,
@@ -86,10 +87,49 @@ export {
   type EvidenceDecision,
 } from './refusal.js';
 export {
+  CALIBRATED_THRESHOLD,
+  DEFAULT_WEIGHTS,
+  DEFAULT_WEIGHTS_GRID,
+  decideCalibrated,
+  calibrateThreshold,
+  citationScore,
+  coverageScore,
+  rankScores,
+  scoreEvidence,
+  tokenize,
+  type CalibrationFixture,
+  type CalibrationResult,
+  type EvidenceScore,
+  type EvidenceWeights,
+} from './calibration.js';
+export {
+  detectConflicts,
+  hasConflicts,
+  type ConflictIssue,
+  type ConflictKind,
+} from './conflict.js';
+export {
+  citationIdsIn,
+  isClaimSentence,
+  splitSentences,
+  verifyCitations,
+  type CitationVerification,
+  type VerifyCitationsInput,
+} from './verifier.js';
+export {
+  generateWithGuarantee,
+  MAX_GENERATION_ATTEMPTS,
+  type GenerationGuaranteeDeps,
+  type GenerationGuaranteeOutcome,
+  type VerifyOutcome,
+} from './generation.js';
+export {
   RETRIEVAL_ARM_LIMIT,
   RETRIEVAL_DEFAULT_LIMIT,
   RETRIEVAL_EF_SEARCH,
   RRF_K,
+  assertEpochCurrent,
+  StaleEpochError,
   executeRetrievalQuery,
   retrievalParams,
   retrievalSql,
