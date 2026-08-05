@@ -84,6 +84,27 @@ export {
   type RetrievalParams,
   type RetrievalQuerySettings,
 } from './retrieval.js';
+export {
+  expireVersionsFor,
+  getRetentionPolicy,
+  upsertRetentionPolicy,
+  DEFAULT_RETENTION_POLICY,
+  type ExpireResult,
+  type RetentionPolicy,
+  type RetentionPolicyPatch,
+} from './retention.js';
+export {
+  RETENTION_SERVICE_MEMBERSHIP,
+  RETENTION_SERVICE_PRINCIPAL,
+  runTenantPurge,
+  type PurgeCounts,
+  type PurgeDeps,
+  type PurgeResult,
+} from './purge.js';
+export {
+  InMemorySourceObjectStore,
+  type SourceObjectStore,
+} from './storage.js';
 export type {
   AnsweredOutcome,
   AuditEvent,

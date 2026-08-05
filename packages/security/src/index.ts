@@ -1,9 +1,11 @@
 export {
   withIdentityContext,
   withSecurityContext,
+  withWorkerContext,
   type IdentityResult,
   type Membership,
   type SecurityContextParams,
+  type WorkerContext,
 } from './bootstrap.js';
 export {
   CONTEXT_GUCS,

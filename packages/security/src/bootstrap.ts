@@ -1,6 +1,8 @@
 import type { Pool, PoolClient } from 'pg';
 import {
   GUC_PRINCIPAL_ID,
+  GUC_REQUEST_ID,
+  GUC_TENANT_ID,
   type SecurityContext,
   setContext,
   verifyContext,
@@ -155,6 +157,61 @@ export async function withSecurityContext<T>(
     });
 
     const ctx = await verifyContext(client);
+    const result = await fn(client, ctx);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Service (worker) security context — the documented exception to the
+ * two-stage principal bootstrap (ADR-0010/r8 §4 "Worker security context").
+ *
+ * Background jobs run under the worker/purge service credentials, which hold
+ * NO membership rows: a principal cannot be verified for a tenant it does not
+ * belong to, and provisioning service memberships per tenant would widen the
+ * membership surface. Instead this helper establishes ONLY the tenant and
+ * request-id GUCs (parameterized `set_config(..., true)`, transaction-local)
+ * plus a fresh read of the authorization epoch. RLS still scopes every row by
+ * `ctx_tenant_id()`; the narrow purge grants plus the role-aware RLS policies
+ * in 0009 prove expiry before any DELETE. Callers are trusted service code
+ * holding the worker/purge credentials — this function is never reachable from
+ * an API request path, so a compromised human principal cannot use it to
+ * fabricate a tenant context.
+ */
+export interface WorkerContext {
+  tenantId: string;
+  requestId: string;
+  authEpoch: string;
+}
+
+export async function withWorkerContext<T>(
+  poolOrClient: Pool | PoolClient,
+  params: { tenantId: string; requestId: string },
+  fn: (client: PoolClient, ctx: WorkerContext) => Promise<T>,
+): Promise<T> {
+  const { client, release } = await acquire(poolOrClient);
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT set_config($1, $2, true)', [GUC_TENANT_ID, params.tenantId]);
+    await client.query('SELECT set_config($1, $2, true)', [GUC_REQUEST_ID, params.requestId]);
+    const epoch = await client.query<{ epoch: string }>(
+      `SELECT epoch FROM securerag.authorization_epoch`,
+    );
+    const epochValue = epoch.rows[0]?.epoch;
+    if (epochValue === undefined) {
+      throw new Error('authorization_epoch is uninitialized');
+    }
+    const ctx: WorkerContext = {
+      tenantId: params.tenantId,
+      requestId: params.requestId,
+      authEpoch: epochValue,
+    };
     const result = await fn(client, ctx);
     await client.query('COMMIT');
     return result;

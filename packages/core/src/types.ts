@@ -44,7 +44,7 @@ export interface SecurityParams {
   requestId: string;
 }
 
-/** T3 audit subset (contract §Audit events) extended by S1 admin events. */
+/** T3 audit subset (contract §Audit events) extended by S1 admin and S9 retention/purge events. */
 export type AuditEventType =
   | 'retrieval:allowed'
   | 'retrieval:denied'
@@ -53,7 +53,11 @@ export type AuditEventType =
   | 'citation:resolved'
   | 'membership:changed'
   | 'group:changed'
-  | 'grant:changed';
+  | 'grant:changed'
+  | 'retention:changed'
+  | 'purge:completed'
+  | 'purge:blocked'
+  | 'audit:purged';
 
 /**
  * Audit event payload. tenant_id and occurred_at come from the database; never

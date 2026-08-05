@@ -26,7 +26,11 @@ export interface GetDocumentParams extends SecurityParams {
 /**
  * Authorized document metadata (title/status only — never content). Foreign
  * and nonexistent documents are indistinguishable: both return null, and no
- * audit event is written for a denial (no enumerable signal).
+ * audit event is written for a denial (no enumerable signal). Retention
+ * visibility (S9, ADR-0010): a document whose EVERY version is expired is
+ * non-retrievable — the EXISTS below requires at least one non-expired
+ * version, so a fully retention-expired document returns null exactly like a
+ * foreign one.
  */
 export async function getDocument(
   pool: Pool,
@@ -41,6 +45,11 @@ export async function getDocument(
       `SELECT d.document_id, d.title, d.status
          FROM securerag.documents d
         WHERE d.document_id = $1
+          AND EXISTS (
+            SELECT 1 FROM securerag.document_versions v
+             WHERE v.tenant_id = d.tenant_id
+               AND v.document_id = d.document_id
+               AND v.status <> 'expired')
           AND ${grantPredicateSql('d.document_id', 'securerag.ctx_tenant_id()')}`,
       [params.documentId],
     );
