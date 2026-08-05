@@ -1,0 +1,77 @@
+# ---- Dependencies ----
+node_modules/
+.pnp
+.pnp.js
+
+# ---- Build output ----
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# ---- Environment & secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+secrets/
+**/secret*.json
+
+# ---- Local data & runtime state ----
+data/
+tmp/
+*.sqlite
+*.sqlite3
+.docker/
+pgdata/
+minio-data/
+postgres-data/
+keycloak-data/
+prometheus-data/
+grafana-data/
+loki-data/
+otel-data/
+*.pid
+*.lock.db
+
+# ---- Test artifacts & scratch ----
+.nyc_output/
+playwright-report/
+test-results/
+*.snap.log
+agent-scratch/
+**.agent-scratch
+/var/
+tmp-artifacts/
+adversarial-raw/
+
+# ---- Logs ----
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.iml
+
+# ---- OCI / tooling ----
+.kube/
+*.tgz.offline
+.terraform/
+
+# ---- OpenCode / agent scratch (never commit agent scratch logs) ----
+.opencode/
+.claude/

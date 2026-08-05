@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-repo-skeleton:
+    name: Validate repository skeleton
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Required files exist
+        shell: bash
+        run: |
+          for f in CONTEXT.md AGENTS.md LICENSE README.md \
+                   docs/threat-model.md docs/graph-and-acceptance.md \
+                   docs/adr/0001-modular-monolith-stack.md docs/adr/0002-release-versioning-tooling.md \
+                   .gitignore .github/workflows/ci.yml; do
+            test -f "$f" || { echo "missing required file: $f"; exit 1; }
+          done
+          echo "all required files present"
+      - name: No staged-parent or secret patterns in tree
+        shell: bash
+        run: |
+          if grep -rIlE '(ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|BEGIN (RSA|EC|OPENSSH|PGP) PRIVATE KEY)' \
+              --exclude-dir=.git --exclude=LICENSE . >/dev/null 2>&1; then
+            echo "secret-like pattern found in tree; refusing to proceed"
+            exit 1
+          fi
+          echo "no obvious secret patterns"
+      - name: Gitignore hygiene
+        shell: bash
+        run: |
+          git check-ignore -q node_modules && echo "node_modules ignored" || exit 1
+          git check-ignore -q .env && echo ".env ignored" || exit 1
+          git check-ignore -q .DS_Store && echo ".DS_Store ignored" || exit 1
