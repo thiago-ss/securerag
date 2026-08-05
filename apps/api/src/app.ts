@@ -4,9 +4,12 @@ import type { Pool } from 'pg';
 import Fastify, {
   type FastifyError,
   type FastifyInstance,
+  type FastifyRequest,
 } from 'fastify';
 import fastifySwagger from '@fastify/swagger';
 import fastifyMultipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
+import type { FastifyOtelInstrumentation } from '@fastify/otel';
 import { ZodError, z } from 'zod';
 import {
   InMemoryLoginStore,
@@ -30,6 +33,7 @@ import {
   addGroupMember,
   addMembership,
   canManage,
+  createDocument,
   createGroup,
   DEFAULT_PII_CONFIG,
   deleteGroup,
@@ -39,6 +43,7 @@ import {
   getSourceObjectKey,
   getVersionWithHistory,
   listAudit,
+  listDocuments,
   listGrants,
   listGroups,
   listQuarantined,
@@ -69,7 +74,10 @@ import {
   auditQuerySchema,
   callbackQuerySchema,
   citationParamsSchema,
+  documentCreateResponseSchema,
+  documentCreateSchema,
   documentInfoSchema,
+  documentListSchema,
   documentParamsSchema,
   grantBodySchema,
   grantCreateResponseSchema,
@@ -152,6 +160,30 @@ export interface ApiDeps {
    * reads them. The worker processes the same store the API wrote to.
    */
   store: SourceObjectStore;
+  /**
+   * Rate limits (S10, ADR-0011): per principal+IP on /retrieval/query, per IP
+   * on the auth endpoints. Defaults match the ADR envelope target (25 rps
+   * retrieval) and the documented auth limit (10/min); tests override to
+   * tiny values to exercise the 429 path cheaply.
+   */
+  rateLimit?: {
+    retrievalMax?: number;
+    retrievalWindowMs?: number;
+    authMax?: number;
+    authWindowMs?: number;
+  };
+  /**
+   * OTel wiring (S10, ADR-0011): the started FastifyOtelInstrumentation from
+   * src/otel.ts. Span attributes carry identifiers/status only — never
+   * prompts, retrieved text, or document content (enforced by test).
+   */
+  otel?: { instrumentation: FastifyOtelInstrumentation };
+  /**
+   * pino logger for the instance (default false). Enabling it AFTER the pino
+   * OTel instrumentation is active correlates log records with traces
+   * (instrumentation-pino). Tests keep it off.
+   */
+  logger?: boolean;
 }
 
 export interface OidcApiConfig {
@@ -183,6 +215,26 @@ const INVALID_REQUEST = { code: 'INVALID_REQUEST', message: 'Invalid request' };
 const NOT_FOUND = { code: 'NOT_FOUND', message: 'Resource not found' };
 const INTERNAL_ERROR = { code: 'INTERNAL_ERROR', message: 'Internal server error' };
 const NOT_READY = { code: 'UNAVAILABLE', message: 'Service not ready' };
+const RATE_LIMITED = { code: 'RATE_LIMITED', message: 'Too many requests' };
+
+/** Documented rate limits (ADR-0011 §rate limits, docs/ops/envelope.md). */
+export const DEFAULT_RATE_LIMITS = {
+  /** Retrieval: the ADR envelope target (25 requests/second per principal+IP). */
+  retrievalMax: 25,
+  retrievalWindowMs: 1_000,
+  /** Auth endpoints: login/callback brute-force guard (per IP). */
+  authMax: 30,
+  authWindowMs: 60_000,
+} as const;
+
+/** Typed 429 body; also thrown by the rate-limit plugin's error builder so
+ * Fastify routes it through the error handler (which emits RATE_LIMITED). */
+function rateLimitError(): Error & { statusCode: number; code: string } {
+  const err = new Error('Too many requests') as Error & { statusCode: number; code: string };
+  err.statusCode = 429;
+  err.code = 'RATE_LIMITED';
+  return err;
+}
 
 /**
  * Refusal shape for a foreign/unknown tenant. MUST stay byte-identical to the
@@ -328,8 +380,20 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
   const loginStore = new InMemoryLoginStore();
   validateSessionCookieConfig(oidcCfg.sessionCookieName, oidcCfg.sessionCookieSecure);
 
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: deps.logger ?? false });
   app.decorate('secureRag', deps);
+
+  // S10 OTel (ADR-0011): route spans carry identifiers/status only. The
+  // instrumentation must be started (SDK) before the plugin registration.
+  if (deps.otel !== undefined) {
+    await app.register(deps.otel.instrumentation.plugin());
+  }
+
+  // S10 rate limits (ADR-0011): registered AFTER the session onRequest hook
+  // (defined below) so this plugin's onRequest runs after session resolution
+  // and its key can bind to the verified principal. Per-route overrides set
+  // the documented limits; the typed 429 body comes from the error handler.
+  const rateLimitCfg = deps.rateLimit ?? {};
 
   await app.register(fastifySwagger, {
     openapi: {
@@ -372,6 +436,9 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
     if (err instanceof ZodError || err.validation) {
       return reply.code(400).send(INVALID_REQUEST);
     }
+    if (err.statusCode === 429) {
+      return reply.code(429).send(RATE_LIMITED);
+    }
     if (err.statusCode !== undefined && err.statusCode >= 400 && err.statusCode < 500) {
       return reply.code(err.statusCode).send(INVALID_REQUEST);
     }
@@ -403,10 +470,26 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
     }
   });
 
+  // Rate limiting (S10, ADR-0011): registered here, AFTER the session hook,
+  // so the key generator sees the verified principal. Per-principal+IP for
+  // retrieval, per-IP for the auth endpoints (no session yet at /auth/*).
+  await app.register(rateLimit, {
+    global: false,
+    keyGenerator: (request: FastifyRequest): string => {
+      const ip = request.ip;
+      const principal = request.principalId;
+      return principal === undefined ? `ip:${ip}` : `p:${principal}:${ip}`;
+    },
+    errorResponseBuilder: rateLimitError,
+    timeWindow: 60_000,
+    max: 60,
+  });
+
   // ---------- Auth (S1) ----------
 
   app.get(
     '/auth/login',
+    { config: { rateLimit: { max: rateLimitCfg.authMax ?? DEFAULT_RATE_LIMITS.authMax, timeWindow: rateLimitCfg.authWindowMs ?? DEFAULT_RATE_LIMITS.authWindowMs } } },
     async (_request, reply) => {
       const flow = oidcClient.createLoginFlow();
       loginStore.add(flow);
@@ -417,7 +500,7 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
 
   app.get(
     '/auth/callback',
-    { schema: { querystring: toFastifyJsonSchema(callbackQuerySchema) } },
+    { schema: { querystring: toFastifyJsonSchema(callbackQuerySchema) }, config: { rateLimit: { max: rateLimitCfg.authMax ?? DEFAULT_RATE_LIMITS.authMax, timeWindow: rateLimitCfg.authWindowMs ?? DEFAULT_RATE_LIMITS.authWindowMs } } },
     async (request, reply) => {
       const query = callbackQuerySchema.parse(request.query);
       // One-time state consumption (RFC 9700 §4.2.4): replay of the callback
@@ -464,6 +547,7 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
 
   app.post(
     '/auth/logout',
+    { config: { rateLimit: { max: 30, timeWindow: 60_000 } } },
     async (request, reply) => {
       // Session exists (hook verified it). Revoke server-side FIRST, then
       // clear the cookie and hand the user agent to the provider's
@@ -1218,11 +1302,80 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
     },
   );
 
+  // ---------- Document library (S10 console, spec §3 GET/POST /documents) ----------
+  // The list is default-deny: rows exist only for documents the principal can
+  // read (any grant) or manages (grant or active tenant admin); capability
+  // flags come from the same SQL predicates as every enforcement path.
+  // Foreign tenants and non-members are indistinguishable 404s. Create is
+  // member-scoped (RLS WITH CHECK pins tenant_id to the verified context) and
+  // grants the creator 'manage' (audited, epoch-bumped) so upload can proceed.
+
+  app.get(
+    '/documents',
+    {
+      schema: {
+        querystring: toFastifyJsonSchema(tenantQuerySchema),
+        response: {
+          200: toFastifyJsonSchema(documentListSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const query = tenantQuerySchema.parse(request.query);
+      try {
+        const documents = await listDocuments(pool, {
+          tenantId: query.tenantId,
+          principalId: request.principalId,
+          requestId: newRequestId(),
+        });
+        return { documents };
+      } catch (err) {
+        if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
+        throw err;
+      }
+    },
+  );
+
+  app.post(
+    '/documents',
+    {
+      schema: {
+        body: toFastifyJsonSchema(documentCreateSchema),
+        response: {
+          201: toFastifyJsonSchema(documentCreateResponseSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = documentCreateSchema.parse(request.body);
+      try {
+        const document = await createDocument(pool, {
+          tenantId: body.tenantId,
+          principalId: request.principalId,
+          requestId: newRequestId(),
+          title: body.title,
+        });
+        if (document === null) return reply.code(404).send(NOT_FOUND);
+        return reply.code(201).send({ document });
+      } catch (err) {
+        if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
+        throw err;
+      }
+    },
+  );
+
   // ---------- Retrieval + documents (T3 semantics unchanged; session-auth now) ----------
 
   app.post(
     '/retrieval/query',
     {
+      config: { rateLimit: { max: rateLimitCfg.retrievalMax ?? DEFAULT_RATE_LIMITS.retrievalMax, timeWindow: rateLimitCfg.retrievalWindowMs ?? DEFAULT_RATE_LIMITS.retrievalWindowMs } },
       schema: {
         body: toFastifyJsonSchema(retrievalQuerySchema),
         response: {

@@ -1,0 +1,16 @@
+# SecureRAG worker image (S10 demo stack, ADR-0011): ingest + purge daemon.
+# Same demo-image posture as Dockerfile.api (tsx runtime, non-root).
+FROM node:24.11.0-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY apps apps
+COPY packages packages
+
+RUN npm ci --no-audit --no-fund && npm cache clean --force
+
+ENV NODE_ENV=production
+USER node
+
+CMD ["npx", "tsx", "apps/worker/src/server.ts"]

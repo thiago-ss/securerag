@@ -2,6 +2,39 @@
   "name": "@securerag/web",
   "private": true,
   "version": "0.1.0",
-  "description": "SecureRAG accessible enterprise console",
-  "engines": { "node": ">=22.22" }
+  "description": "SecureRAG accessible enterprise console (React 19 + Vite 8)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "playwright test",
+    "test:server": "tsx test/server.ts"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@securerag/api": "^0.1.0",
+    "@securerag/core": "^0.1.0",
+    "@securerag/db": "^0.1.0",
+    "@securerag/eval": "^0.1.0",
+    "@securerag/providers": "^0.1.0",
+    "@securerag/security": "^0.1.0",
+    "@types/node": "^26.1.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "testcontainers": "^12.1.0",
+    "tsx": "^4.23.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0"
+  }
 }

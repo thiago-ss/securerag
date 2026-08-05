@@ -212,6 +212,30 @@ export const documentInfoSchema = z.object({
   status: z.string(),
 });
 
+/** Document-library row (S10 console): metadata + the requesting principal's
+ * deterministic capability flags (default-deny; rows only exist for granted
+ * or admin-managed documents). */
+export const documentListItemSchema = z.object({
+  documentId: z.string(),
+  title: z.string(),
+  status: z.string(),
+  canRead: z.boolean(),
+  canWrite: z.boolean(),
+  canManage: z.boolean(),
+});
+
+export const documentListSchema = z.object({
+  documents: z.array(documentListItemSchema),
+});
+
+export const documentCreateSchema = z.object({
+  tenantId: uuidSchema,
+  title: z.string().min(1).max(200),
+});
+export type DocumentCreate = z.infer<typeof documentCreateSchema>;
+
+export const documentCreateResponseSchema = z.object({ document: documentInfoSchema });
+
 export const versionInfoSchema = z.object({
   documentId: z.string(),
   versionId: z.string(),

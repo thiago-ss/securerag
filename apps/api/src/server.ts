@@ -3,11 +3,13 @@ import { InMemorySourceObjectStore, S3SourceObjectStore } from '@securerag/core'
 import { SpyGenerator } from '@securerag/providers';
 import { buildApp } from './app.js';
 import { envSchema } from './schemas.js';
+import { setupOtel } from './otel.js';
 
 /**
- * API entrypoint (S1/S2). Reads the runtime environment via the zod env schema,
- * builds the least-privilege securerag_api pool, wires the real OIDC provider
- * configuration (issuer = trust anchor), and starts the Fastify server.
+ * API entrypoint (S1/S2/S10). Reads the runtime environment via the zod env
+ * schema, builds the least-privilege securerag_api pool, wires the real OIDC
+ * provider configuration (issuer = trust anchor), starts the OTel SDK
+ * (identifiers/status only, ADR-0011), and starts the Fastify server.
  * Graceful shutdown: SIGTERM/SIGINT close the server first, then the pool.
  *
  * S1 provider: the deterministic SpyGenerator is the ONLY generator in this
@@ -38,6 +40,10 @@ const store = env.SOURCE_STORE === 's3'
   : new InMemorySourceObjectStore();
 
 const sessionCookieSecure = env.SESSION_COOKIE_SECURE;
+const otel = setupOtel(process.env);
+if (otel !== null) {
+  console.log(`securerag-api otel enabled (service=${process.env['OTEL_SERVICE_NAME'] ?? 'securerag-api'})`);
+}
 const app = await buildApp({
   pool,
   providers: new SpyGenerator(),
@@ -56,6 +62,7 @@ const app = await buildApp({
     postLoginRedirectPath: '/',
     postLogoutRedirectPath: '/',
   },
+  ...(otel !== null ? { otel, logger: true } : {}),
 });
 
 let shuttingDown = false;

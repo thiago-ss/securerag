@@ -1,0 +1,20 @@
+# SecureRAG API image (S10 demo stack, ADR-0011).
+# Demo images run the repo through tsx; production images (compiled, tools
+# stripped, non-root with dropped caps) are the G5 hardening runbook target —
+# see docs/ops/envelope.md. Non-root runtime either way.
+FROM node:24.11.0-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY apps apps
+COPY packages packages
+
+RUN npm ci --no-audit --no-fund && npm cache clean --force
+
+ENV NODE_ENV=production
+USER node
+
+EXPOSE 3000
+
+CMD ["npx", "tsx", "apps/api/src/server.ts"]

@@ -1,0 +1,84 @@
+{
+  "realm": "securerag-demo",
+  "enabled": true,
+  "registrationAllowed": false,
+  "sslRequired": "external",
+  "accessTokenLifespan": 300,
+  "accessCodeLifespan": 300,
+  "clients": [
+    {
+      "clientId": "securerag-api",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8080/api/auth/callback",
+        "http://localhost:3000/auth/callback"
+      ],
+      "webOrigins": ["http://localhost:8080", "http://localhost:3000"],
+      "postLogoutRedirectUris": [
+        "http://localhost:8080/",
+        "http://localhost:3000/"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "pkce.not.confidential": "false",
+        "backchannel.logout.session.required": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "preferred_username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "full_name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "firstName",
+            "claim.name": "name",
+            "access.token.claim": "true",
+            "id.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "idTokenSignedResponseAlg": "RS256",
+  "idTokenEncryptionAlgValuesSupported": [],
+  "users": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@securerag.example",
+      "firstName": "Alice",
+      "credentials": [
+        { "type": "password", "value": "alice-demo-password", "temporary": false }
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "username": "carol",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "carol@securerag.example",
+      "firstName": "Carol",
+      "credentials": [
+        { "type": "password", "value": "carol-demo-password", "temporary": false }
+      ]
+    }
+  ]
+}
