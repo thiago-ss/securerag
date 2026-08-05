@@ -18,6 +18,8 @@ export interface OracleTenant {
 
 export interface OraclePrincipal {
   id: string;
+  /** Principal may see unredacted PII on authorized human surfaces. */
+  piiRead: boolean;
 }
 
 export interface OracleMembership {
@@ -42,6 +44,7 @@ export interface OracleDocument {
   tenantId: string;
   documentId: string;
   title: string;
+  /** 'active' | 'deleted'; deleted documents are never allowed. */
   status: string;
 }
 
@@ -52,6 +55,8 @@ export interface OracleVersion {
   versionNo: number;
   status: string;
   isCurrent: boolean;
+  /** Retention-expired versions are never allowed (S9 wires real dates). */
+  retentionExpired: boolean;
 }
 
 export interface OracleChunk {
@@ -60,6 +65,8 @@ export interface OracleChunk {
   chunkId: string;
   chunkNo: number;
   text: string;
+  /** Chunk text contains synthetic PII; redacted for principals without piiRead. */
+  hasPii: boolean;
 }
 
 export interface OracleGrant {
@@ -88,6 +95,8 @@ export interface AllowedSets {
   documents: Set<string>;
   versions: Set<string>;
   chunks: Set<string>;
+  /** Chunks whose text must be REDACTED for this principal (PII scope). */
+  redactedChunks: Set<string>;
 }
 
 const VISIBLE_VERSION_STATUSES = new Set(['valid', 'released']);
@@ -95,9 +104,13 @@ const VISIBLE_VERSION_STATUSES = new Set(['valid', 'released']);
 /**
  * Exact allowed sets for (principalId, tenantId):
  *  - membership: active membership in the tenant (any role)
- *  - documents: any grant (principal / group / tenant_role) that is not revoked
- *  - versions: visible status (valid|released) AND is_current
+ *  - documents: any grant (principal / group / tenant_role) that is not revoked,
+ *    on an ACTIVE document
+ *  - versions: visible status (valid|released), is_current, and NOT
+ *    retention-expired
  *  - chunks: chunks of allowed versions
+ *  - redactedChunks: allowed chunks whose text contains synthetic PII for
+ *    principals WITHOUT piiRead (model context must never carry raw PII)
  * Default deny: any missing fact yields empty sets.
  */
 export function computeAllowed(
@@ -108,7 +121,13 @@ export function computeAllowed(
   const membership = facts.memberships.find(
     (m) => m.tenantId === tenantId && m.principalId === principalId && m.isActive,
   );
-  if (!membership) return { documents: new Set(), versions: new Set(), chunks: new Set() };
+  const empty = (): AllowedSets => ({
+    documents: new Set(),
+    versions: new Set(),
+    chunks: new Set(),
+    redactedChunks: new Set(),
+  });
+  if (!membership) return empty();
 
   const groupIds = new Set(
     facts.groupMemberships
@@ -132,7 +151,12 @@ export function computeAllowed(
 
   const documents = new Set(
     facts.documents
-      .filter((d) => d.tenantId === tenantId && grantedDocumentIds.has(d.documentId))
+      .filter(
+        (d) =>
+          d.tenantId === tenantId &&
+          d.status !== 'deleted' &&
+          grantedDocumentIds.has(d.documentId),
+      )
       .map((d) => d.documentId),
   );
 
@@ -143,7 +167,8 @@ export function computeAllowed(
           v.tenantId === tenantId &&
           grantedDocumentIds.has(v.documentId) &&
           VISIBLE_VERSION_STATUSES.has(v.status) &&
-          v.isCurrent,
+          v.isCurrent &&
+          !v.retentionExpired,
       )
       .map((v) => v.versionId),
   );
@@ -154,5 +179,14 @@ export function computeAllowed(
       .map((c) => c.chunkId),
   );
 
-  return { documents, versions, chunks };
+  const principal = facts.principals.find((p) => p.id === principalId);
+  const canReadPii = principal?.piiRead === true;
+  const redactedChunks = new Set(
+    [...chunks].filter((chunkId) => {
+      const chunk = facts.chunks.find((c) => c.chunkId === chunkId);
+      return chunk?.hasPii === true && !canReadPii;
+    }),
+  );
+
+  return { documents, versions, chunks, redactedChunks };
 }

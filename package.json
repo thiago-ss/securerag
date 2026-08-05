@@ -16,6 +16,7 @@
     "test": "npm run test --workspaces --if-present",
     "test:db": "npm run test --workspace @securerag/db",
     "test:db:catalog": "npm run test:catalog --workspace @securerag/db",
-    "test:api": "npm run test --workspace @securerag/api"
+    "test:api": "npm run test --workspace @securerag/api",
+    "test:security": "npm run test --workspace @securerag/eval && npm run test --workspace @securerag/api && npm run test --workspace @securerag/security"
   }
 }

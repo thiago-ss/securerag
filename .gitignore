@@ -50,6 +50,7 @@ agent-scratch/
 /var/
 tmp-artifacts/
 adversarial-raw/
+report/
 
 # ---- Logs ----
 *.log

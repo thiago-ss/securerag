@@ -294,7 +294,7 @@ async function materializeFacts(
 
   return {
     tenants: tenants.rows.map((r: { id: string }) => ({ id: r.id })),
-    principals: principals.rows.map((r: { id: string }) => ({ id: r.id })),
+    principals: principals.rows.map((r: { id: string }) => ({ id: r.id, piiRead: false })),
     memberships: memberships.rows.map(
       (r: { tenant_id: string; principal_id: string; role: string; is_active: boolean }) => ({
         tenantId: r.tenant_id,
@@ -337,6 +337,7 @@ async function materializeFacts(
         versionNo: r.version_no,
         status: r.status,
         isCurrent: r.is_current,
+        retentionExpired: false,
       }),
     ),
     chunks: chunks.rows.map(
@@ -352,6 +353,7 @@ async function materializeFacts(
         chunkId: r.chunk_id,
         chunkNo: r.chunk_no,
         text: r.text_redacted,
+        hasPii: false,
       }),
     ),
     grants: [

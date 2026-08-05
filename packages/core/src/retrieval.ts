@@ -75,6 +75,7 @@ SELECT c.chunk_id, c.chunk_no, c.text_redacted, c.span_start, c.span_end,
     ON d.tenant_id = v.tenant_id AND d.document_id = v.document_id
  CROSS JOIN LATERAL websearch_to_tsquery('english', $1) q
  WHERE c.search_vec @@ q
+   AND d.status <> 'deleted'
    AND v.status IN ('valid','released')
    AND v.is_current
    AND ${grantPredicateSql('d.document_id', 'c.tenant_id')}
@@ -103,6 +104,7 @@ SELECT c.chunk_id, c.chunk_no, c.text_redacted, c.span_start, c.span_end,
   JOIN securerag.documents d
     ON d.tenant_id = v.tenant_id AND d.document_id = v.document_id
  WHERE c.embedding IS NOT NULL
+   AND d.status <> 'deleted'
    AND v.status IN ('valid','released')
    AND v.is_current
    AND ${grantPredicateSql('d.document_id', 'c.tenant_id')}
@@ -129,6 +131,7 @@ WITH keyword AS MATERIALIZED (
         ON d.tenant_id = v.tenant_id AND d.document_id = v.document_id
      CROSS JOIN LATERAL websearch_to_tsquery('english', $1) q
      WHERE c.search_vec @@ q
+       AND d.status <> 'deleted'
        AND v.status IN ('valid','released')
        AND v.is_current
        AND ${grantPredicateSql('d.document_id', 'c.tenant_id')}
@@ -145,6 +148,7 @@ semantic AS MATERIALIZED (
       JOIN securerag.documents d
         ON d.tenant_id = v.tenant_id AND d.document_id = v.document_id
      WHERE c.embedding IS NOT NULL
+       AND d.status <> 'deleted'
        AND v.status IN ('valid','released')
        AND v.is_current
        AND ${grantPredicateSql('d.document_id', 'c.tenant_id')}

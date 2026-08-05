@@ -43,7 +43,12 @@ export function grantPredicateSql(documentRef: string, tenantRef: string): strin
     SELECT 1 FROM securerag.document_grants g
      WHERE g.tenant_id = ${tenantRef}
        AND g.document_id = ${documentRef}
-       AND ${grantSubjectMatchSql('g')})`;
+       AND ${grantSubjectMatchSql('g')})
+   AND EXISTS (
+    SELECT 1 FROM securerag.documents dd
+     WHERE dd.tenant_id = ${tenantRef}
+       AND dd.document_id = ${documentRef}
+       AND dd.status <> 'deleted')`;
 }
 
 /** Manage-capability predicate: a direct manage grant matching the context

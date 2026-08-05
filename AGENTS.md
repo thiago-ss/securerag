@@ -55,12 +55,12 @@ This is a security-critical repository. Every agent (human or AI) must follow th
 
 ## Verification commands (will grow as toolchains land; always confirm in package.json)
 
-- `npm test` — unit + integration (Vitest)
-- `npm run test:security` — deterministic adversarial suite (1,200 queries)
-- `npm run test:property` — property/concurrency/mutation gates
+- `npm test` — unit + integration (Vitest, all workspaces)
+- `npm run test:security` — deterministic adversarial suite + api/security suites
+- `npm run test:db:catalog` — schema/RLS catalog contract (Testcontainers)
 - `npm run typecheck` / `npm run lint`
 - `docker compose up` — local demo (Keycloak + PostgreSQL/pgvector + MinIO + api + worker + web)
-- `npm run migration:up` / `migration:down` — explicit SQL migrations
+- `npm run migration:up` / `migration:status` — explicit SQL migrations (bootstrap: `migrations/bootstrap/`, schema: `migrations/`)
 
 ## Agent skills
 

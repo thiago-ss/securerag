@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "description": "SecureRAG Fastify REST API (Zod boundary, committed OpenAPI)",
   "type": "module",
-  "engines": { "node": ">=22.22" },
+  "engines": {
+    "node": ">=22.22"
+  },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -29,5 +31,12 @@
     "tsx": "^4.23.6",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./src/*": "./src/*"
   }
 }
