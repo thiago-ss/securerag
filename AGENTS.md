@@ -62,6 +62,20 @@ This is a security-critical repository. Every agent (human or AI) must follow th
 - `docker compose up` — local demo (Keycloak + PostgreSQL/pgvector + MinIO + api + worker + web)
 - `npm run migration:up` / `migration:down` — explicit SQL migrations
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues (`thiago-ss/securerag`) via the `gh` CLI; wayfinder map + child tickets with `Blocked by:` edges. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
+
 ## Repo layout (target)
 
 ```
