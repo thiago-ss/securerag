@@ -134,6 +134,143 @@ export async function seedFixtures(pool: pg.Pool): Promise<FixtureWorld> {
   };
 }
 
+// ---------- T3 seeding helpers (groups, grants, versions, chunks) ----------
+// Trusted fixture creation like seedFixtures: RLS applies to the roles under
+// test, never to fixture setup. Used by packages/eval corpus builder so the
+// DB world and the oracle facts derive from the same inserts.
+
+export interface SeedVersionParams {
+  tenantId: string;
+  documentId: string;
+  versionNo: number;
+  sourceObjectKey: string;
+  contentHash: Buffer;
+  status: string;
+  isCurrent: boolean;
+}
+
+export interface SeedGrantParams {
+  tenantId: string;
+  documentId: string;
+  subjectType: 'principal' | 'group' | 'tenant_role';
+  subjectId: string;
+  capability: 'read' | 'write' | 'manage';
+}
+
+export interface SeedChunkParams {
+  tenantId: string;
+  versionId: string;
+  chunkNo: number;
+  text: string;
+  spanStart: number;
+  spanEnd: number;
+}
+
+export async function seedGroup(
+  pool: pg.Pool,
+  tenantId: string,
+  name: string,
+): Promise<string> {
+  const { rows } = await pool.query<{ group_id: string }>(
+    `INSERT INTO securerag.groups (tenant_id, name) VALUES ($1, $2) RETURNING group_id`,
+    [tenantId, name],
+  );
+  const groupId = rows[0]?.group_id;
+  if (!groupId) throw new Error('fixture group insert failed');
+  return groupId;
+}
+
+export async function seedGroupMembership(
+  pool: pg.Pool,
+  tenantId: string,
+  groupId: string,
+  principalId: string,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO securerag.group_memberships (tenant_id, group_id, principal_id)
+     VALUES ($1, $2, $3)`,
+    [tenantId, groupId, principalId],
+  );
+}
+
+export async function seedGrant(
+  pool: pg.Pool,
+  params: SeedGrantParams,
+): Promise<string> {
+  const { rows } = await pool.query<{ grant_id: string }>(
+    `INSERT INTO securerag.document_grants
+       (tenant_id, document_id, subject_type, subject_id, capability)
+     VALUES ($1, $2, $3, $4, $5) RETURNING grant_id`,
+    [
+      params.tenantId,
+      params.documentId,
+      params.subjectType,
+      params.subjectId,
+      params.capability,
+    ],
+  );
+  const grantId = rows[0]?.grant_id;
+  if (!grantId) throw new Error('fixture grant insert failed');
+  return grantId;
+}
+
+/** Revocation is row deletion (document_grants has no status column). */
+export async function revokeGrant(
+  pool: pg.Pool,
+  tenantId: string,
+  grantId: string,
+): Promise<void> {
+  await pool.query(
+    `DELETE FROM securerag.document_grants WHERE tenant_id = $1 AND grant_id = $2`,
+    [tenantId, grantId],
+  );
+}
+
+export async function seedVersion(
+  pool: pg.Pool,
+  params: SeedVersionParams,
+): Promise<string> {
+  const { rows } = await pool.query<{ version_id: string }>(
+    `INSERT INTO securerag.document_versions
+       (tenant_id, document_id, version_no, source_object_key, content_hash, status, is_current)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING version_id`,
+    [
+      params.tenantId,
+      params.documentId,
+      params.versionNo,
+      params.sourceObjectKey,
+      params.contentHash,
+      params.status,
+      params.isCurrent,
+    ],
+  );
+  const versionId = rows[0]?.version_id;
+  if (!versionId) throw new Error('fixture version insert failed');
+  return versionId;
+}
+
+export async function seedChunk(
+  pool: pg.Pool,
+  params: SeedChunkParams,
+): Promise<string> {
+  const { rows } = await pool.query<{ chunk_id: string }>(
+    `INSERT INTO securerag.chunks
+       (tenant_id, version_id, chunk_no, text_redacted, span_start, span_end, content_hash)
+     VALUES ($1, $2, $3, $4, $5, $6, decode('aabb', 'hex')) RETURNING chunk_id`,
+    [
+      params.tenantId,
+      params.versionId,
+      params.chunkNo,
+      params.text,
+      params.spanStart,
+      params.spanEnd,
+    ],
+  );
+  const chunkId = rows[0]?.chunk_id;
+  if (!chunkId) throw new Error('fixture chunk insert failed');
+  return chunkId;
+}
+
 /** Wipe tenant-owned data between tests (superuser path; RLS never applies to fixtures). */
 export async function resetData(pool: pg.Pool): Promise<void> {
   await pool.query(

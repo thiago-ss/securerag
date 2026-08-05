@@ -1,22 +1,17 @@
 {
-  "name": "@securerag/security",
+  "name": "@securerag/eval",
   "private": true,
   "version": "0.1.0",
-  "description": "SecureRAG two-stage security-context bootstrap and least-privilege runtime pool",
+  "description": "SecureRAG evaluation: independent authorization oracle, T3 corpus, gate tests",
   "type": "module",
-  "exports": {
-    ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
-    }
-  },
   "engines": { "node": ">=22.22" },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "pg": "^8.16.3"
+    "@securerag/core": "^0.1.0",
+    "@securerag/providers": "^0.1.0"
   },
   "devDependencies": {
     "@securerag/db": "^0.1.0",

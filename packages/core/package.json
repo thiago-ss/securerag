@@ -1,8 +1,8 @@
 {
-  "name": "@securerag/security",
+  "name": "@securerag/core",
   "private": true,
   "version": "0.1.0",
-  "description": "SecureRAG two-stage security-context bootstrap and least-privilege runtime pool",
+  "description": "SecureRAG domain: grants, documents, retrieval, refusal, audit",
   "type": "module",
   "exports": {
     ".": {
@@ -16,6 +16,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@securerag/providers": "^0.1.0",
+    "@securerag/security": "^0.1.0",
     "pg": "^8.16.3"
   },
   "devDependencies": {
