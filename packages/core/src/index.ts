@@ -6,6 +6,7 @@ export {
   type ListAuditParams,
 } from './audit.js';
 export {
+  getAuthorizedSource,
   getDocument,
   getVersion,
   resolveCitation,
@@ -13,6 +14,8 @@ export {
   type GetDocumentParams,
   type GetVersionParams,
   type ResolveCitationParams,
+  type SourceInfo,
+  type SourceParams,
   type VersionInfo,
 } from './documents.js';
 export {
@@ -22,20 +25,32 @@ export {
   redactQuestion,
   type PiiConfig,
 } from './redaction.js';
-export { canRead, grantPredicateSql, type CanReadParams } from './grants.js';
 export {
   addGrant,
   canManage,
+  canRead,
+  grantPredicateSql,
   listGrants,
   managePredicateSql,
   removeGrant,
+  toGrantListEntries,
   type CanManageParams,
+  type CanReadParams,
   type GrantCapability,
+  type GrantListEntry,
   type GrantParams,
   type GrantRecord,
   type GrantSubjectType,
   type GrantWriteParams,
-} from './grants.js';
+} from './acl.js';
+export {
+  getVersionWithHistory,
+  historyCapabilitySql,
+  listVersions,
+  type HistoryParams,
+  type HistoryVersionParams,
+  type VersionMetadata,
+} from './history.js';
 export {
   addGroupMember,
   createGroup,

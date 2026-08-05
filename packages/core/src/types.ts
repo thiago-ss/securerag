@@ -51,6 +51,7 @@ export type AuditEventType =
   | 'retrieval:denied'
   | 'retrieval:refused'
   | 'document:read'
+  | 'document:history'
   | 'citation:resolved'
   | 'membership:changed'
   | 'group:changed'

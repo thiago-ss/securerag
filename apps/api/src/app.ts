@@ -31,13 +31,15 @@ import {
   createGroup,
   DEFAULT_PII_CONFIG,
   deleteGroup,
+  getAuthorizedSource,
   getDocument,
-  getVersion,
+  getVersionWithHistory,
   listAudit,
   listGrants,
   listGroups,
   listQuarantined,
   listTenantMembers,
+  listVersions,
   removeGrant,
   removeGroupMember,
   removeMembership,
@@ -46,9 +48,11 @@ import {
   runRetrieval,
   setMembershipActive,
   setMembershipRole,
+  toGrantListEntries,
   upsertPrincipal,
   type AuditRecord,
   type PiiConfig,
+  type VersionMetadata,
 } from '@securerag/core';
 import type { AnswerGenerator } from '@securerag/providers';
 import type { OracleFacts } from '@securerag/eval/src/oracle.js';
@@ -57,7 +61,6 @@ import {
   auditQuerySchema,
   callbackQuerySchema,
   citationParamsSchema,
-  citationSchema,
   documentInfoSchema,
   documentParamsSchema,
   grantBodySchema,
@@ -82,15 +85,18 @@ import {
   quarantineListSchema,
   quarantineReviewBodySchema,
   quarantineReviewParamsSchema,
+  resolvedCitationSchema,
   retentionPolicyBodySchema,
   retentionPolicyQuerySchema,
   retentionPolicySchema,
   retrievalOutcomeSchema,
   retrievalQuerySchema,
+  sourceInfoSchema,
   statusSchema,
   tenantQuerySchema,
   uuidSchema,
-  versionInfoSchema,
+  versionListSchema,
+  versionMetadataSchema,
   versionParamsSchema,
 } from './schemas.js';
 
@@ -241,6 +247,20 @@ function toAuditRecordDto(record: AuditRecord): unknown {
     refusalReason: record.refusalReason ?? null,
     latencyMs: record.latencyMs ?? null,
     answerHash: record.answerHash ? record.answerHash.toString('hex') : null,
+  };
+}
+
+/** History version metadata → wire DTO: publishedAt ISO-8601 or null, content
+ * hash hex-encoded; never content. */
+function toVersionMetadataDto(version: VersionMetadata): unknown {
+  return {
+    documentId: version.documentId,
+    versionId: version.versionId,
+    versionNo: version.versionNo,
+    status: version.status,
+    isCurrent: version.isCurrent,
+    publishedAt: version.publishedAt === null ? null : version.publishedAt.toISOString(),
+    hash: version.contentHash.toString('hex'),
   };
 }
 
@@ -784,9 +804,7 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
         }),
       );
       if (grants === null) return reply.code(404).send(NOT_FOUND);
-      return {
-        grants: grants.map((g) => ({ ...g, createdAt: g.createdAt.toISOString() })),
-      };
+      return { grants: toGrantListEntries(grants) };
     },
   );
 
@@ -1084,12 +1102,46 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
   );
 
   app.get(
+    '/documents/:id/versions',
+    {
+      schema: {
+        params: toFastifyJsonSchema(documentParamsSchema),
+        response: {
+          200: toFastifyJsonSchema(versionListSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const params = documentParamsSchema.parse(request.params);
+      const requestId = newRequestId();
+      void reply.header('x-request-id', requestId);
+      // S3 history capability (ADR-0003 amendment): manage-grant holders see
+      // every version's metadata (incl. non-current); all other grant holders
+      // see only the current version. Foreign/nonexistent/unmanageable
+      // documents yield the same 404.
+      const versions = await acrossTenants(pool, request.principalId, (tenantId) =>
+        listVersions(pool, {
+          tenantId,
+          principalId: request.principalId,
+          requestId,
+          documentId: params.id,
+        }),
+      );
+      if (versions === null) return reply.code(404).send(NOT_FOUND);
+      return { versions: versions.map(toVersionMetadataDto) };
+    },
+  );
+
+  app.get(
     '/documents/:id/versions/:versionId',
     {
       schema: {
         params: toFastifyJsonSchema(versionParamsSchema),
         response: {
-          200: toFastifyJsonSchema(versionInfoSchema),
+          200: toFastifyJsonSchema(versionMetadataSchema),
           400: toFastifyJsonSchema(problemSchema),
           404: toFastifyJsonSchema(problemSchema),
           500: toFastifyJsonSchema(problemSchema),
@@ -1100,8 +1152,11 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
       const params = versionParamsSchema.parse(request.params);
       const requestId = newRequestId();
       void reply.header('x-request-id', requestId);
+      // S3: a non-current versionId resolves ONLY for manage-grant holders
+      // (history = manage capability); everyone else observes the same 404 as
+      // foreign/nonexistent versions.
       const version = await acrossTenants(pool, request.principalId, (tenantId) =>
-        getVersion(pool, {
+        getVersionWithHistory(pool, {
           tenantId,
           principalId: request.principalId,
           requestId,
@@ -1110,7 +1165,47 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
         }),
       );
       if (version === null) return reply.code(404).send(NOT_FOUND);
-      return version;
+      return toVersionMetadataDto(version);
+    },
+  );
+
+  app.get(
+    '/documents/:id/versions/:versionId/source',
+    {
+      schema: {
+        params: toFastifyJsonSchema(versionParamsSchema),
+        response: {
+          200: toFastifyJsonSchema(sourceInfoSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const params = versionParamsSchema.parse(request.params);
+      const requestId = newRequestId();
+      void reply.header('x-request-id', requestId);
+      // S3 authorized source seam: per-request authorization identical to the
+      // version endpoint — source CONTENT only for CURRENT valid/released
+      // versions of a granted document; non-current versions are never
+      // disclosed (history is metadata-only). Minimal stream placeholder;
+      // S2's object-store route replaces this handler, keeping the gate.
+      const source = await acrossTenants(pool, request.principalId, (tenantId) =>
+        getAuthorizedSource(pool, {
+          tenantId,
+          principalId: request.principalId,
+          requestId,
+          documentId: params.id,
+          versionId: params.versionId,
+        }),
+      );
+      if (source === null) return reply.code(404).send(NOT_FOUND);
+      return {
+        versionId: source.versionId,
+        documentId: source.documentId,
+        contentHash: source.contentHash.toString('hex'),
+      };
     },
   );
 
@@ -1120,7 +1215,7 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
       schema: {
         params: toFastifyJsonSchema(citationParamsSchema),
         response: {
-          200: toFastifyJsonSchema(citationSchema),
+          200: toFastifyJsonSchema(resolvedCitationSchema),
           400: toFastifyJsonSchema(problemSchema),
           404: toFastifyJsonSchema(problemSchema),
           500: toFastifyJsonSchema(problemSchema),
@@ -1144,7 +1239,10 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
         ),
       );
       if (citation === null) return reply.code(404).send(NOT_FOUND);
-      return citation;
+      // S3 hardening: the resolved response carries the `resolvable` flag
+      // (always true on 200 — unresolvable citations are indistinguishable
+      // 404s), so clients can detect stale references from earlier answers.
+      return { ...citation, resolvable: true };
     },
   );
 

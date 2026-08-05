@@ -938,10 +938,6 @@ paths:
                     items:
                       type: object
                       properties:
-                        tenantId:
-                          type: string
-                        documentId:
-                          type: string
                         grantId:
                           type: string
                         subjectType:
@@ -950,16 +946,11 @@ paths:
                           type: string
                         capability:
                           type: string
-                        createdAt:
-                          type: string
                       required:
-                        - tenantId
-                        - documentId
                         - grantId
                         - subjectType
                         - subjectId
                         - capability
-                        - createdAt
                       additionalProperties: false
                 required:
                   - grants
@@ -1818,6 +1809,104 @@ paths:
                   - code
                   - message
                 additionalProperties: false
+  /documents/{id}/versions:
+    get:
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: path
+          name: id
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        documentId:
+                          type: string
+                        versionId:
+                          type: string
+                        versionNo:
+                          type: integer
+                          minimum: -9007199254740991
+                          maximum: 9007199254740991
+                        status:
+                          type: string
+                        isCurrent:
+                          type: boolean
+                        publishedAt:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        hash:
+                          type: string
+                      required:
+                        - documentId
+                        - versionId
+                        - versionNo
+                        - status
+                        - isCurrent
+                        - publishedAt
+                        - hash
+                      additionalProperties: false
+                required:
+                  - versions
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
   /documents/{id}/versions/{versionId}:
     get:
       parameters:
@@ -1855,7 +1944,11 @@ paths:
                     type: string
                   isCurrent:
                     type: boolean
-                  title:
+                  publishedAt:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  hash:
                     type: string
                 required:
                   - documentId
@@ -1863,7 +1956,89 @@ paths:
                   - versionNo
                   - status
                   - isCurrent
-                  - title
+                  - publishedAt
+                  - hash
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+  /documents/{id}/versions/{versionId}/source:
+    get:
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: path
+          name: id
+          required: true
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: path
+          name: versionId
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versionId:
+                    type: string
+                  documentId:
+                    type: string
+                  contentHash:
+                    type: string
+                required:
+                  - versionId
+                  - documentId
+                  - contentHash
                 additionalProperties: false
         "400":
           description: Default Response
@@ -1951,12 +2126,17 @@ paths:
                     additionalProperties: false
                   excerpt:
                     type: string
+                  resolvable:
+                    type: boolean
+                    enum:
+                      - true
                 required:
                   - documentId
                   - versionId
                   - chunkId
                   - span
                   - excerpt
+                  - resolvable
                 additionalProperties: false
         "400":
           description: Default Response

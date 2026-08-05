@@ -118,6 +118,51 @@ export async function getVersion(
   });
 }
 
+export interface SourceInfo {
+  versionId: string;
+  documentId: string;
+  contentHash: Buffer;
+}
+
+export interface SourceParams extends GetVersionParams {}
+
+/**
+ * Authorized source accessor (S3, GET /documents/:id/versions/:versionId/source).
+ * The gate is byte-identical to getVersion: source CONTENT is only ever
+ * disclosed for CURRENT valid/released versions of a granted document
+ * (history is metadata-only; citations/source never resolve non-current
+ * versions). Runs inside withSecurityContext, so foreign/nonexistent versions
+ * return null exactly like denied ones. This is the minimal authorized stream
+ * seam: S2's object-store route replaces the handler while keeping this
+ * per-request SQL authorization.
+ */
+export async function getAuthorizedSource(
+  pool: Pool,
+  params: SourceParams,
+): Promise<SourceInfo | null> {
+  return withSecurityContext(pool, params, async (client) => {
+    const { rows } = await client.query<{
+      version_id: string;
+      document_id: string;
+      content_hash: Buffer;
+    }>(
+      `SELECT v.version_id, v.document_id, v.content_hash
+         FROM securerag.document_versions v
+         JOIN securerag.documents d
+           ON d.tenant_id = v.tenant_id AND d.document_id = v.document_id
+        WHERE v.version_id = $1
+          AND v.document_id = $2
+          AND v.status IN ('valid','released')
+          AND v.is_current
+          AND ${grantPredicateSql('d.document_id', 'securerag.ctx_tenant_id()')}`,
+      [params.versionId, params.documentId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    return { versionId: row.version_id, documentId: row.document_id, contentHash: row.content_hash };
+  });
+}
+
 export interface ResolveCitationParams extends SecurityParams {
   citationId: string;
 }
