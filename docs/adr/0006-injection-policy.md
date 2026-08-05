@@ -34,3 +34,8 @@ Quarantined versions never become searchable.
 - A detector miss or total detection outage leaves tenant isolation intact.
 - Quarantine/review is a human gate with full audit trail; UI shows quarantine state and review
   flow.
+
+## Amendment (S5 review) — accepted service-layer gating
+
+- The `document_versions` RLS policy is tenant-scope-only; the reviewer gate (`security_reviewer` role OR tenant admin) is enforced at the service layer with audit + epoch bump, not by a DB policy (a status-transition CHECK is noted for future hardening). Ingest paths must call `reviewQuarantine`/`quarantineVersion` through the core seams so transitions always bump the epoch and audit.
+- `quarantineVersion` is intentionally ungated (ingest-worker contract); `reviewQuarantine` is the only reviewer-gated transition.

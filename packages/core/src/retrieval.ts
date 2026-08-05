@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from 'pg';
 import { MembershipError, withIdentityContext, withSecurityContext } from '@securerag/security';
 import {
   HEURISTIC_INJECTION_DETECTOR,
+  redactText,
   type AnswerGenerator,
   type InjectionDetector,
 } from '@securerag/providers';
@@ -360,6 +361,7 @@ async function detectAndAudit(
   ctx: import('@securerag/security').SecurityContext,
   detector: InjectionDetector,
   params: RetrievalParams,
+  questionRedacted: string,
 ): Promise<void> {
   try {
     const scan = await detector.scan(params.question);
@@ -372,7 +374,9 @@ async function detectAndAudit(
         principalId: ctx.principalId,
         membershipId: ctx.membershipId,
         authEpoch: ctx.authEpoch,
-        queryHash: sha256(params.question),
+        // ADR-0005: audit hashes only redacted derivatives (the raw question
+        // may contain low-entropy PII that would make the hash brute-forceable).
+        queryHash: sha256(questionRedacted),
         filters: { risk: 'high', reasons: scan.reasons },
       },
     });
@@ -432,7 +436,7 @@ export async function runRetrieval(
       : { question: questionRedacted, embedding: queryEmbedding, limit };
 
   return withSecurityContext(deps.pool, params, async (client, ctx) => {
-    await detectAndAudit(client, ctx, injectionDetector, params);
+    await detectAndAudit(client, ctx, injectionDetector, params, questionRedacted);
 
     const bundle = await executeRetrievalQuery(
       client,
@@ -490,6 +494,12 @@ export async function runRetrieval(
       citations,
     });
 
+    // ADR-0005 placement 8: the generated answer is post-checked (defense-in-
+    // depth) — a model that echoes or paraphrases PII never ships it raw, even
+    // for pii:read principals. Hash the RAW answer for tamper-evident audit
+    // correlation, but return only the redacted form.
+    const answerRedacted = redactText(generated.answer, pii.detector.detect(generated.answer));
+
     await appendAudit({
       client,
       event: {
@@ -505,7 +515,7 @@ export async function runRetrieval(
 
     return {
       decision: 'answered',
-      answer: generated.answer,
+      answer: answerRedacted,
       citations: generated.citations,
     };
   });

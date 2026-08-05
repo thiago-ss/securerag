@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { withSecurityContext } from '@securerag/security';
 import { appendAudit } from './audit.js';
+import { DEFAULT_PII_CONFIG, redactForSurface } from './redaction.js';
 import type { SecurityParams } from './types.js';
 
 /**
@@ -182,7 +183,11 @@ export async function reviewQuarantine(
       documentId: row.document_id,
       decision: params.decision,
     };
-    if (params.reviewerCtx !== undefined) filters.reviewerCtx = params.reviewerCtx;
+    if (params.reviewerCtx !== undefined) {
+      // ADR-0005: reviewer notes may contain PII; only redacted derivatives
+      // enter tenant audit views.
+      filters.reviewerCtx = redactForSurface(params.reviewerCtx, DEFAULT_PII_CONFIG, false);
+    }
 
     if (params.decision === 'release') {
       const epoch = await bumpEpoch(client);

@@ -29,3 +29,9 @@
 
 - Embeddings and provider payloads are safe-by-construction; `pii:read` widens only human
   surfaces; leakage of raw PII into logs/audit is a test-failing defect.
+
+## Amendment (S4 review) — accepted limitations and post-check
+
+- Detector bypasses: format variants (unspaced/dashed SSN, unspaced cards, alternate phone forms) are NOT detected in v1 (deterministic heuristic detectors cover the documented corpus formats). Redaction is defense-in-depth; authorization is the security boundary. The ST gate scans only the corpus formats; variant classes are tracked in the risk register for a future NER/classifier adapter.
+- Answer post-check implemented: the generated answer is re-redacted before leaving `runRetrieval` (placement 8), for ALL principals including `pii:read`; the RAW answer hash is stored for tamper-evident audit correlation.
+- Audit surfaces: `injection:detected` and retrieval events hash the REDACTED question; reviewer notes are redacted before entering audit filters; model-context and response scans flag raw PII for ANY principal (no pii:read exemption).
