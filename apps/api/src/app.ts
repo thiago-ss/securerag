@@ -35,11 +35,13 @@ import {
   listAudit,
   listGrants,
   listGroups,
+  listQuarantined,
   listTenantMembers,
   removeGrant,
   removeGroupMember,
   removeMembership,
   resolveCitation,
+  reviewQuarantine,
   runRetrieval,
   setMembershipActive,
   setMembershipRole,
@@ -75,6 +77,10 @@ import {
   membershipUpdateSchema,
   okSchema,
   problemSchema,
+  quarantineListQuerySchema,
+  quarantineListSchema,
+  quarantineReviewBodySchema,
+  quarantineReviewParamsSchema,
   retrievalOutcomeSchema,
   retrievalQuerySchema,
   statusSchema,
@@ -843,6 +849,85 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
           }),
         );
         if (!removed) return reply.code(404).send(NOT_FOUND);
+        return { ok: true };
+      } catch (err) {
+        if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
+        throw err;
+      }
+    },
+  );
+
+  // ---------- Admin: injection quarantine (S5, ADR-0006 layers 6/8) ----------
+  // Detection is a signal, never a gate: these routes manage the quarantine
+  // STATE (default on high-risk ingest scans) via the explicit, audited
+  // tenant security review. Review authorization is deterministic
+  // (admin OR tenant role 'security_reviewer', in SQL); any other caller —
+  // and any foreign/nonexistent version — observes the same 404.
+
+  app.get(
+    '/quarantine',
+    {
+      schema: {
+        querystring: toFastifyJsonSchema(quarantineListQuerySchema),
+        response: {
+          200: toFastifyJsonSchema(quarantineListSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const query = quarantineListQuerySchema.parse(request.query);
+      try {
+        const versions = await listQuarantined(pool, {
+          tenantId: query.tenantId,
+          principalId: request.principalId,
+          requestId: newRequestId(),
+        });
+        return {
+          versions: versions.map((v) => ({
+            ...v,
+            reviewedBy: v.reviewedBy ?? null,
+            reviewedAt: v.reviewedAt === null ? null : v.reviewedAt.toISOString(),
+            reviewDecision: v.reviewDecision ?? null,
+            createdAt: v.createdAt.toISOString(),
+          })),
+        };
+      } catch (err) {
+        if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
+        throw err;
+      }
+    },
+  );
+
+  app.post(
+    '/quarantine/:versionId/review',
+    {
+      schema: {
+        params: toFastifyJsonSchema(quarantineReviewParamsSchema),
+        body: toFastifyJsonSchema(quarantineReviewBodySchema),
+        response: {
+          200: toFastifyJsonSchema(okSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const params = quarantineReviewParamsSchema.parse(request.params);
+      const body = quarantineReviewBodySchema.parse(request.body);
+      try {
+        const reviewed = await reviewQuarantine(pool, {
+          tenantId: body.tenantId,
+          principalId: request.principalId,
+          requestId: newRequestId(),
+          versionId: params.versionId,
+          decision: body.decision,
+          ...(body.reviewerCtx !== undefined ? { reviewerCtx: body.reviewerCtx } : {}),
+        });
+        if (!reviewed) return reply.code(404).send(NOT_FOUND);
         return { ok: true };
       } catch (err) {
         if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);

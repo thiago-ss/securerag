@@ -17,3 +17,9 @@ export {
   type PiiDetector,
   type PiiMatch,
 } from './pii.js';
+export {
+  HEURISTIC_INJECTION_DETECTOR,
+  HeuristicInjectionDetector,
+  type InjectionDetector,
+  type InjectionScanResult,
+} from './injection.js';

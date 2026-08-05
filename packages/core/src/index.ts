@@ -65,6 +65,15 @@ export {
   type UpsertPrincipalParams,
 } from './identity.js';
 export {
+  listQuarantined,
+  quarantineVersion,
+  reviewQuarantine,
+  type QuarantineRecord,
+  type QuarantineVersionParams,
+  type ReviewDecision,
+  type ReviewQuarantineParams,
+} from './quarantine.js';
+export {
   DETERMINISTIC_EMBEDDING,
   DeterministicHashEmbedding,
   EMBEDDING_DIM,

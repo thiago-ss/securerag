@@ -117,6 +117,22 @@ export type GrantBody = z.infer<typeof grantBodySchema>;
 export const grantRemoveBodySchema = z.object({ grantId: uuidSchema });
 export type GrantRemoveBody = z.infer<typeof grantRemoveBodySchema>;
 
+// ---------- S5 injection quarantine boundaries ----------
+
+export const quarantineListQuerySchema = z.object({ tenantId: uuidSchema });
+export type QuarantineListQuery = z.infer<typeof quarantineListQuerySchema>;
+
+export const quarantineReviewParamsSchema = z.object({ versionId: uuidSchema });
+export type QuarantineReviewParams = z.infer<typeof quarantineReviewParamsSchema>;
+
+export const quarantineReviewBodySchema = z.object({
+  tenantId: uuidSchema,
+  decision: z.enum(['release', 'keep']),
+  /** Optional human context (ticket id / reason); stored redacted in audit filters. */
+  reviewerCtx: z.string().min(1).max(500).optional(),
+});
+export type QuarantineReviewBody = z.infer<typeof quarantineReviewBodySchema>;
+
 // ---------- response shapes (also drive the committed OpenAPI) ----------
 
 export const spanSchema = z.object({
@@ -230,6 +246,21 @@ export type GrantRecord = z.infer<typeof grantRecordSchema>;
 export const grantListSchema = z.object({ grants: z.array(grantRecordSchema) });
 
 export const grantCreateResponseSchema = z.object({ grant: grantRecordSchema });
+
+export const quarantineRecordSchema = z.object({
+  versionId: z.string(),
+  documentId: z.string(),
+  versionNo: z.number().int(),
+  title: z.string(),
+  status: z.string(),
+  reviewedBy: z.string().nullable(),
+  reviewedAt: z.string().nullable(),
+  reviewDecision: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type QuarantineRecord = z.infer<typeof quarantineRecordSchema>;
+
+export const quarantineListSchema = z.object({ versions: z.array(quarantineRecordSchema) });
 
 export const okSchema = z.object({ ok: z.literal(true) });
 
