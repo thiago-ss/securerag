@@ -24,7 +24,8 @@ import {
   type SessionRow,
 } from '@securerag/security';
 import {
-  addGrant,
+  getRetentionPolicy,
+  upsertRetentionPolicy,  addGrant,
   addGroupMember,
   addMembership,
   createGroup,
@@ -81,6 +82,9 @@ import {
   quarantineListSchema,
   quarantineReviewBodySchema,
   quarantineReviewParamsSchema,
+  retentionPolicyBodySchema,
+  retentionPolicyQuerySchema,
+  retentionPolicySchema,
   retrievalOutcomeSchema,
   retrievalQuerySchema,
   statusSchema,
@@ -929,6 +933,83 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
         });
         if (!reviewed) return reply.code(404).send(NOT_FOUND);
         return { ok: true };
+      } catch (err) {
+        if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
+        throw err;
+      }
+    },
+  );
+
+  // ---------- Admin: tenant retention policy (S9, ADR-0010) ----------
+  // GET: members of the tenant may read their policy; PUT: tenant admins only,
+  // audited 'retention:changed' with an epoch bump (enforced in core).
+
+  app.get(
+    '/retention-policy',
+    {
+      schema: {
+        querystring: toFastifyJsonSchema(retentionPolicyQuerySchema),
+        response: {
+          200: toFastifyJsonSchema(retentionPolicySchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const query = retentionPolicyQuerySchema.parse(request.query);
+      try {
+        const policy = await getRetentionPolicy(pool, {
+          tenantId: query.tenantId,
+          principalId: request.principalId,
+          requestId: newRequestId(),
+        });
+        if (policy === null) return reply.code(404).send(NOT_FOUND);
+        return {
+          ...policy,
+          updatedAt: policy.updatedAt.toISOString(),
+        };
+      } catch (err) {
+        if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
+        throw err;
+      }
+    },
+  );
+
+  app.put(
+    '/retention-policy',
+    {
+      schema: {
+        body: toFastifyJsonSchema(retentionPolicyBodySchema),
+        response: {
+          200: toFastifyJsonSchema(retentionPolicySchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = retentionPolicyBodySchema.parse(request.body);
+      try {
+        const policy = await upsertRetentionPolicy(pool, {
+          tenantId: body.tenantId,
+          principalId: request.principalId,
+          requestId: newRequestId(),
+          patch: {
+            ...(body.sourceDays !== undefined ? { sourceDays: body.sourceDays } : {}),
+            ...(body.derivedDays !== undefined ? { derivedDays: body.derivedDays } : {}),
+            ...(body.auditDays !== undefined ? { auditDays: body.auditDays } : {}),
+            ...(body.graceDays !== undefined ? { graceDays: body.graceDays } : {}),
+            ...(body.legalHold !== undefined ? { legalHold: body.legalHold } : {}),
+          },
+        });
+        if (policy === null) return reply.code(404).send(NOT_FOUND);
+        return {
+          ...policy,
+          updatedAt: policy.updatedAt.toISOString(),
+        };
       } catch (err) {
         if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
         throw err;

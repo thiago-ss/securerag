@@ -262,6 +262,34 @@ export type QuarantineRecord = z.infer<typeof quarantineRecordSchema>;
 
 export const quarantineListSchema = z.object({ versions: z.array(quarantineRecordSchema) });
 
+export const retentionPolicyBodySchema = z
+  .object({
+    tenantId: uuidSchema,
+    sourceDays: z.number().int().min(0).optional(),
+    derivedDays: z.number().int().min(0).optional(),
+    auditDays: z.number().int().min(0).optional(),
+    graceDays: z.number().int().min(0).optional(),
+    legalHold: z.boolean().optional(),
+  })
+  .refine((v) => Object.keys(v).filter((k) => k !== 'tenantId').length > 0, {
+    message: 'empty patch',
+  });
+export type RetentionPolicyBody = z.infer<typeof retentionPolicyBodySchema>;
+
+export const retentionPolicyQuerySchema = z.object({ tenantId: uuidSchema });
+export type RetentionPolicyQuery = z.infer<typeof retentionPolicyQuerySchema>;
+
+export const retentionPolicySchema = z.object({
+  tenantId: z.string(),
+  sourceDays: z.number(),
+  derivedDays: z.number(),
+  auditDays: z.number(),
+  graceDays: z.number(),
+  legalHold: z.boolean(),
+  updatedAt: z.string(),
+});
+export type RetentionPolicyRecord = z.infer<typeof retentionPolicySchema>;
+
 export const okSchema = z.object({ ok: z.literal(true) });
 
 export const meSchema = z.object({

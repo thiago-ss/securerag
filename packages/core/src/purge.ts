@@ -62,8 +62,11 @@ export interface PurgeResult {
   epoch: string;
 }
 
-interface Eligibility extends PurgeCounts {
+interface Eligibility {
   sourceKeys: string[];
+  chunks: number;
+  versions: number;
+  audit: number;
 }
 
 interface DeletedAuditRow {

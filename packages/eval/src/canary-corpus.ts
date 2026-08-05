@@ -189,6 +189,7 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
       const v1Status =
         k.kind === 'quarantined-doc' ? 'quarantined'
         : k.kind === 'superseded-doc' ? 'superseded'
+        : k.kind === 'retained-expired' ? 'expired'
         : 'valid';
       versions.push({
         tenantId: tid, documentId: docId, versionId: v1Id, versionNo: 1,
@@ -474,7 +475,7 @@ async function seedCorpus(
     ],
   );
 
-  const seededVersions = versions.filter((v) => !v.retentionExpired);
+  const seededVersions = versions;
   await pool.query(
     `INSERT INTO securerag.document_versions
        (tenant_id, document_id, version_id, version_no, source_object_key, content_hash, status, is_current)

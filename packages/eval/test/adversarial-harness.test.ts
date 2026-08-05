@@ -31,6 +31,7 @@ const PROMPTS = {
   deletedDoc: 'deleted-doc operational notes',
   supersededDoc: 'superseded-doc operational notes',
   quarantinedDoc: 'quarantined-doc operational notes',
+  retainedExpired: 'retained-expired operational notes',
   injectionDoc: 'injection-doc operational notes',
   piiDoc: 'client contact email',
   nearIdentical: 'Project X quarterly launch plan milestone 42 Aquila Prime',
@@ -358,6 +359,9 @@ function buildCases(world: CanaryWorld): AttackCase[] {
     if (quarantinedDoc) {
       cases.push({ name: `t${i}-q-quarantined`, subject: admin, tenantId: tenant.id, surface: 'query', mode: 'hybrid', prompt: PROMPTS.quarantinedDoc, expect: 'denied' });
     }
+    // Retention-expired: the version is seeded with status 'expired' (S9) and
+    // must never be retrievable.
+    cases.push({ name: `t${i}-q-retained-expired`, subject: admin, tenantId: tenant.id, surface: 'query', mode: 'hybrid', prompt: PROMPTS.retainedExpired, expect: 'denied' });
     if (injectionDoc) {
       cases.push({ name: `t${i}-q-injection-granted`, subject: member, tenantId: tenant.id, surface: 'query', mode: 'hybrid', prompt: PROMPTS.injectionDoc, expect: 'allowed' });
     }

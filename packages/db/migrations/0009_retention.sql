@@ -25,15 +25,17 @@ SET ROLE securerag_owner;
 -- seeding in the application layer.
 CREATE FUNCTION securerag.seed_retention_policy()
 RETURNS trigger
-LANGUAGE sql
+LANGUAGE plpgsql
 AS $$
+BEGIN
   INSERT INTO securerag.retention_policies (tenant_id)
   SELECT NEW.tenant_id
    WHERE NOT EXISTS (
      SELECT 1 FROM securerag.retention_policies
       WHERE tenant_id = NEW.tenant_id
    );
-  SELECT NEW;
+  RETURN NEW;
+END;
 $$;
 
 CREATE TRIGGER tenants_retention_policy_seed
@@ -149,5 +151,10 @@ GRANT DELETE ON
 -- with invoker privileges).
 GRANT SELECT ON securerag.retention_policies TO securerag_audit_retention;
 GRANT DELETE ON securerag.audit_events TO securerag_audit_retention;
+
+-- Service roles read the authorization epoch inside withWorkerContext (they
+-- never bump it: bump EXECUTE stays api/worker-only).
+GRANT SELECT ON securerag.authorization_epoch
+  TO securerag_purge, securerag_audit_retention;
 
 RESET ROLE;

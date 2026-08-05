@@ -2,6 +2,25 @@
   "name": "@securerag/worker",
   "private": true,
   "version": "0.1.0",
-  "description": "SecureRAG job consumer (extraction, embeddings, purge, audit expiry)",
-  "engines": { "node": ">=22.22" }
+  "description": "SecureRAG job consumer (purge, audit expiry; extraction/embeddings land in S2)",
+  "type": "module",
+  "engines": { "node": ">=22.22" },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@securerag/core": "^0.1.0",
+    "@securerag/security": "^0.1.0",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@securerag/db": "^0.1.0",
+    "@types/pg": "^8.15.4",
+    "testcontainers": "^12.1.0",
+    "tsx": "^4.23.6",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
 }
