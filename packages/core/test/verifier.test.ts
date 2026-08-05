@@ -70,6 +70,33 @@ describe('citation verifier (deterministic, model-independent, S7)', () => {
     for (const sentence of meta) expect(isClaimSentence(sentence), sentence).toBe(false);
   });
 
+  it('telegraphic answers without claim verbs are still material claims (S7 review 5)', () => {
+    const telegraphic = [
+      'Q3 revenue: 5 million.',
+      'Revenue 5M.',
+      'Price: $12.50 per unit.',
+      'Headcount 40 employees.',
+    ];
+    const stillMeta = [
+      'Synthesis of authorized evidence [uuid]',
+      'Summary of findings.',
+      'A summarized answer follows below.',
+    ];
+    for (const sentence of telegraphic) expect(isClaimSentence(sentence), sentence).toBe(true);
+    for (const sentence of stillMeta) expect(isClaimSentence(sentence), sentence).toBe(false);
+  });
+
+  it('rejects a telegraphic material answer that carries no citation', () => {
+    const { id1 } = ids();
+    const verification = verifyCitations({
+      answer: 'Q3 revenue: 5 million.',
+      citations: [],
+      bundleChunkIds: new Set([id1]),
+    });
+    expect(verification.ok).toBe(false);
+    expect(verification.issues.some((i) => i.includes('claim'))).toBe(true);
+  });
+
   it('sentence splitting is deterministic on .!? boundaries', () => {
     expect(splitSentences('One. Two! Three? Four')).toEqual(['One.', 'Two!', 'Three?', 'Four']);
   });

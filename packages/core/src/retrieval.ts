@@ -7,6 +7,21 @@ import {
   type InjectionDetector,
 } from '@securerag/providers';
 import { appendAudit, sha256 } from './audit.js';
+
+/**
+ * Refusal-path audit writer (ADR-0009 "audit-write failure returns no
+ * answer"): the refusal is ALWAYS returned; a broken audit writer must never
+ * turn a refusal into a 500 (S7 review 10).
+ */
+async function appendAuditRefusal(
+  params: Parameters<typeof appendAudit>[0],
+): Promise<void> {
+  try {
+    await appendAudit(params);
+  } catch {
+    // The refusal stands; the audit gap is surfaced by monitoring.
+  }
+}
 import { decideCalibrated } from './calibration.js';
 import { detectConflicts } from './conflict.js';
 import { resolveCitationOn } from './documents.js';
@@ -522,7 +537,7 @@ export async function runRetrieval(
       await assertEpochCurrent(client, ctx.authEpoch);
     } catch (err) {
       if (!(err instanceof StaleEpochError)) throw err;
-      await appendAudit({
+      await appendAuditRefusal({
         client,
         event: {
           ...baseAudit,
@@ -543,7 +558,7 @@ export async function runRetrieval(
     // score threshold, ADR-0009): empty bundle, foreign-only bundle, a single
     // authorized chunk, or a below-threshold composite all refuse here.
     if (decideCalibrated(redactedBundle, questionRedacted) === 'INSUFFICIENT_EVIDENCE') {
-      await appendAudit({
+      await appendAuditRefusal({
         client,
         event: {
           ...baseAudit,
@@ -565,7 +580,7 @@ export async function runRetrieval(
     // disagrees cannot support a claim.
     const conflicts = detectConflicts(redactedBundle);
     if (conflicts.length > 0) {
-      await appendAudit({
+      await appendAuditRefusal({
         client,
         event: {
           ...baseAudit,
@@ -641,7 +656,7 @@ export async function runRetrieval(
     );
 
     if (verification.decision === 'refused') {
-      await appendAudit({
+      await appendAuditRefusal({
         client,
         event: {
           ...baseAudit,

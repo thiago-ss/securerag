@@ -412,6 +412,14 @@ export async function runIngestion(
     });
 
     // ---------- Atomic publish (supersede prior current in the same batch) ----------
+    // Document-row lock serializes concurrent publishes (is_current flip is
+    // race-free; the loser waits and then supersedes the winner).
+    await client.query(
+      `SELECT 1 FROM securerag.documents
+        WHERE tenant_id = securerag.ctx_tenant_id() AND document_id = $1
+        FOR UPDATE`,
+      [params.documentId],
+    );
     await client.query(
       `UPDATE securerag.document_versions
           SET is_current = false, status = 'superseded'
@@ -450,8 +458,11 @@ export async function runIngestion(
   });
 
   // A rejection was audited and committed inside the transaction; now surface
-  // it to the worker as a permanent failure (never retried).
+  // it to the worker as a permanent failure (never retried). A permanently
+  // rejected version never publishes, so its source object would orphan
+  // storage forever — delete it best-effort (S2 review 4).
   if (rejectionReason !== null) {
+    await deps.store.deleteSources([params.objectKey]).catch(() => {});
     throw new IngestPermanentFailure(rejectionReason);
   }
   return outcome;
@@ -518,6 +529,8 @@ export interface StageUploadParams extends SecurityParams {
   sha256Hex: string;
   filename: string;
   contentType: string;
+  /** Source byte size, recorded in the ingest:received audit event. */
+  sizeBytes: number;
 }
 
 export interface StageUploadResult {
@@ -567,6 +580,14 @@ export async function stageUpload(
       return { jobId: existingJob.job_id, versionId: payload.versionId };
     }
 
+    // Serialize concurrent uploads of the SAME document: the document-row lock
+    // makes MAX(version_no)+1 and the is_current flip race-free (S2 review 2).
+    await client.query(
+      `SELECT 1 FROM securerag.documents
+        WHERE tenant_id = securerag.ctx_tenant_id() AND document_id = $1
+        FOR UPDATE`,
+      [params.documentId],
+    );
     const { rows: versionRows } = await client.query<{ version_id: string }>(
       `INSERT INTO securerag.document_versions
          (tenant_id, document_id, version_no, source_object_key, content_hash, status, is_current)
@@ -681,7 +702,8 @@ export async function getSourceObjectKey(
         WHERE v.tenant_id = securerag.ctx_tenant_id()
           AND v.document_id = $1
           AND v.version_id = $2
-          AND v.status IN ('valid','released','superseded')
+          AND v.status IN ('valid','released')
+          AND v.is_current
           AND ${grantPredicateSql('d.document_id', 'securerag.ctx_tenant_id()')}`,
       [params.documentId, params.versionId],
     );

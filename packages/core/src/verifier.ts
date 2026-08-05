@@ -33,6 +33,19 @@ export const CITATION_ID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}
 const CLAIM_VERB_RE =
   /\b(?:is|are|was|were|reached|stood at|equals|amounts to|contains|states that|reports that|shows that|says that|indicates that|provides that|requires|allows|includes|rises to|falls to|changed to|has|have)\b/i;
 
+/** Telegraphic material claims without verbs (S7 review 5): "Q3 revenue: 5
+ * million." / "Revenue 5M" / "Price $12.50". A colon-separated value
+ * statement or an entity+quantity without a verb is still a material claim
+ * that must carry a citation. */
+const TELEGRAPHIC_CLAIM_RE =
+  /(?:^|[.!?]\s+)[A-Z][^.!?]{0,80}?:\s*(?:[A-Z$€£]|\d|['"“])/;
+
+/** Telegraphic entity+quantity: "Revenue 5 million" / "Revenue was..." is
+ * covered by verbs; without a verb ("Revenue 5M", "Headcount 40") the pattern
+ * below fires only on explicit quantity shapes to limit false positives. */
+const QUANTITY_CLAIM_RE =
+  /(?:^|[.!?]\s+)[A-Z][A-Za-z ]{1,40}\s\d[\d,.]*\s*(?:million|billion|thousand|M|K|%|\$|USD|EUR)?\b/i;
+
 export function splitSentences(text: string): string[] {
   return text
     .split(/(?<=[.!?])\s+/)
@@ -40,9 +53,13 @@ export function splitSentences(text: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-/** Material-claim sentence (verb-based; labeled fixtures define the set). */
+/** Material-claim sentence (verb + telegraphic shapes; labeled fixtures
+ * define the set). Telegraphic answers like "Q3 revenue: 5 million." are
+ * claims and must carry a citation (S7 review 5). */
 export function isClaimSentence(sentence: string): boolean {
-  return CLAIM_VERB_RE.test(sentence);
+  return CLAIM_VERB_RE.test(sentence) ||
+    TELEGRAPHIC_CLAIM_RE.test(sentence) ||
+    QUANTITY_CLAIM_RE.test(sentence);
 }
 
 /** Citation ids referenced inside a sentence/answer (UUID shape). */

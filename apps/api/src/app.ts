@@ -203,6 +203,20 @@ const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  * Denied admin writes are indistinguishable across RLS violations, foreign
  * keys, unique conflicts, and missing memberships: the same 404 body.
  */
+/** Server-detected content type from magic bytes (S2 review 6). */
+function sniffContentType(bytes: Buffer, fallback: string): string {
+  if (bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
+    return 'application/pdf';
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return 'text/plain';
+  }
+  return fallback;
+}
+
 function isIndistinguishableDenial(err: unknown): boolean {
   if (err instanceof MembershipError) return true;
   const code = (err as { code?: string }).code;
@@ -1088,7 +1102,9 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
       const requestId = newRequestId();
       const sha256Hex = createHash('sha256').update(bytes).digest('hex');
       const filename = part.filename ?? 'document';
-      const contentType = part.mimetype ?? '';
+      // Magic-byte sniffing (S2 review 6): the client-supplied mimetype is
+      // advisory; the pipeline type is derived from the bytes.
+      const contentType = sniffContentType(bytes, part.mimetype ?? '');
       const staged = await acrossTenants(pool, request.principalId, async (tenantId) => {
         // Manage gate first (the owning tenant's probe passes; all others
         // return null identically), then store the object, then stage the
@@ -1112,6 +1128,7 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
             sha256Hex,
             filename,
             contentType,
+            sizeBytes: bytes.length,
           });
         } catch (err) {
           await deps.store.deleteSources([key]).catch(() => {});

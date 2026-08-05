@@ -110,6 +110,9 @@ describe('S3 ACL + history endpoints over HTTP', () => {
         [w.docA.versionId],
       );
       await store.put(key.rows[0]!.source_object_key, Buffer.from('history-v1-bytes'));
+      // The superseded version's object EXISTS in storage: the 404 must come
+      // from the authorization gate, not a missing object (non-vacuous test).
+      await store.put('tenant-a/hist-v2.txt', Buffer.from('superseded-bytes'));
     }
     await pool.query(
       `UPDATE securerag.document_versions

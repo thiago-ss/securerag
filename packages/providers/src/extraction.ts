@@ -122,6 +122,38 @@ async function withTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Zip-bomb guard for DOCX (a zip container): cap entries and the ratio of
+ * uncompressed to compressed size before mammoth inflates anything (S2
+ * review 3). */
+function assertSafeZip(buffer: Buffer): void {
+  const ZIP_MAX_ENTRIES = 2_000;
+  const ZIP_MAX_RATIO = 100;
+  let entries = 0;
+  let compressed = 0;
+  let uncompressed = 0;
+  // Parse the central directory records: EOCD at the end, entries before it.
+  const eocd = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (eocd < 0) throw new UnsupportedTypeError('docx-zip-malformed');
+  const count = buffer.readUInt16LE(eocd + 10);
+  const offset = buffer.readUInt32LE(eocd + 16);
+  if (count > ZIP_MAX_ENTRIES) throw new TextSizeLimitError(0);
+  for (let i = 0; i < count; i += 1) {
+    const pos = offset + i * 46;
+    if (pos + 46 > buffer.length) break;
+    const method = buffer.readUInt16LE(pos + 10);
+    const comp = buffer.readUInt32LE(pos + 20);
+    const uncomp = buffer.readUInt32LE(pos + 24);
+    compressed += comp;
+    uncompressed += uncomp;
+    void method;
+  }
+  if (compressed > 0 && uncompressed / compressed > ZIP_MAX_RATIO) {
+    throw new TextSizeLimitError(0);
+  }
+  entries = count;
+  void entries;
+}
+
 /** Enforce the extracted-text cap (post-parse, all adapters). */
 function enforceTextCap(text: string): string {
   const bytes = Buffer.byteLength(text, 'utf8');
@@ -145,8 +177,16 @@ export class PdfExtractor {
       useWorkerFetch: false,
       disableFontFace: true,
     });
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        // Cancel the underlying parse so a hostile 50MB PDF cannot pin CPU
+        // after the timeout (S2 review 3). task.destroy aborts the worker.
+        void task.destroy().catch(() => {});
+        reject(new ExtractionTimeoutError());
+      }, EXTRACTION_TIMEOUT_MS).unref?.();
+    });
     try {
-      const pdf = await task.promise;
+      const pdf = await Promise.race([task.promise, timeout]);
       const pages = pdf.numPages;
       if (pages > MAX_PAGES) throw new PageLimitError(pages);
       let text = '';
@@ -182,6 +222,9 @@ export class DocxExtractor {
     if (contentType !== 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
       throw new UnsupportedTypeError('docx-mime-required');
     }
+    // Zip-bomb guard (S2 review 3): DOCX is a zip; cap entry count and the
+    // decompressed ratio before mammoth inflates anything.
+    assertSafeZip(buffer);
     const mammoth = await import('mammoth');
     const { value } = await mammoth.extractRawText({ buffer });
     const text = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
