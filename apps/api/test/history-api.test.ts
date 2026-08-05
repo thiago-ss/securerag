@@ -54,6 +54,7 @@ describe('S3 ACL + history endpoints over HTTP', () => {
   let api: Pool;
   let world: FixtureWorld;
   let provider: FakeOidcProvider;
+  let store: InMemorySourceObjectStore | null = null;
   let app: FastifyInstance;
   let base: string;
   let versions: { v1: string; v2: string; v3: string; v4: string };
@@ -63,6 +64,7 @@ describe('S3 ACL + history endpoints over HTTP', () => {
     await resetData(db.superuserPool);
     world = await seedFixtures(db.superuserPool);
     api = db.apiPool;
+    store = new InMemorySourceObjectStore();
     versions = await seedHistory(db.superuserPool, world);
     provider = new FakeOidcProvider({
       issuer: 'test-issuer',
@@ -84,7 +86,7 @@ describe('S3 ACL + history endpoints over HTTP', () => {
       pool: api,
       providers: new SpyGenerator(),
       oidc,
-      store: new InMemorySourceObjectStore(),
+      store,
     });
     await app.listen({ port: 0, host: '127.0.0.1' });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -100,6 +102,15 @@ describe('S3 ACL + history endpoints over HTTP', () => {
     pool: Pool,
     w: FixtureWorld,
   ): Promise<{ v1: string; v2: string; v3: string; v4: string }> {
+    // Source objects for the authorized-stream test (S2 seam): the v1 object
+    // is stored under its content-addressed key; others exist as rows only.
+    if (store !== null) {
+      const key = await pool.query<{ source_object_key: string }>(
+        'SELECT source_object_key FROM securerag.document_versions WHERE version_id = $1',
+        [w.docA.versionId],
+      );
+      await store.put(key.rows[0]!.source_object_key, Buffer.from('history-v1-bytes'));
+    }
     await pool.query(
       `UPDATE securerag.document_versions
           SET published_at = now() - interval '90 days'
@@ -114,7 +125,7 @@ describe('S3 ACL + history endpoints over HTTP', () => {
          ($1, $2, 2, 'tenant-a/hist-v2.txt', decode('aabbcc', 'hex'), 'superseded', false, now() - interval '60 days'),
          ($1, $2, 3, 'tenant-a/hist-v3.txt', decode('aabbcd', 'hex'), 'quarantined', false, now() - interval '30 days'),
          ($1, $2, 4, 'tenant-a/hist-v4.txt', decode('aabbce', 'hex'), 'expired', false, now() - interval '7 days')
-       RETURNING version_id, version_no`,
+       RETURNING version_id, version_no`, 
       [w.tenantA.id, w.docA.id],
     );
     const byNo = new Map(rows.map((r) => [r.version_no, r.version_id]));
@@ -347,11 +358,8 @@ describe('S3 ACL + history endpoints over HTTP', () => {
         session,
       );
       expect(current.status).toBe(200);
-      expect(await current.json()).toEqual({
-        versionId: versions.v1,
-        documentId: world.docA.id,
-        contentHash: 'aabb',
-      });
+      // S2 streaming seam: byte-identical source content, no JSON envelope.
+      expect(Buffer.from(await current.arrayBuffer()).toString()).toBe('history-v1-bytes');
 
       const superseded = await getResource(
         `/documents/${world.docA.id}/versions/${versions.v2}/source`,
