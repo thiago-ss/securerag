@@ -1,0 +1,635 @@
+openapi: 3.1.0
+info:
+  title: SecureRAG API
+  version: 0.1.0
+  description: Tenant-isolated RAG retrieval with default-deny authorization
+    enforced in SQL. Foreign and nonexistent resources are indistinguishable
+    (same status and schema).
+components:
+  securitySchemes:
+    devPrincipal:
+      type: apiKey
+      in: header
+      name: X-SecureRag-Principal
+      description: "T3-only test transport: the header value maps EXACTLY to the
+        principal id. No other authentication exists in T3; OIDC replaces this
+        in S1."
+  schemas: {}
+paths:
+  /retrieval/query:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenantId:
+                  type: string
+                  format: uuid
+                  pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+                question:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+              required:
+                - tenantId
+                - question
+              additionalProperties: false
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: object
+                    properties:
+                      decision:
+                        type: string
+                        enum:
+                          - answered
+                      answer:
+                        type: string
+                      citations:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            documentId:
+                              type: string
+                            versionId:
+                              type: string
+                            chunkId:
+                              type: string
+                            span:
+                              type: object
+                              properties:
+                                start:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                                end:
+                                  type: integer
+                                  minimum: -9007199254740991
+                                  maximum: 9007199254740991
+                              required:
+                                - start
+                                - end
+                              additionalProperties: false
+                            excerpt:
+                              type: string
+                          required:
+                            - documentId
+                            - versionId
+                            - chunkId
+                            - span
+                            - excerpt
+                          additionalProperties: false
+                    required:
+                      - decision
+                      - answer
+                      - citations
+                    additionalProperties: false
+                  - type: object
+                    properties:
+                      decision:
+                        type: string
+                        enum:
+                          - refused
+                      code:
+                        type: string
+                      message:
+                        type: string
+                    required:
+                      - decision
+                      - code
+                      - message
+                    additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "401":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+  /documents/{id}:
+    get:
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: path
+          name: id
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documentId:
+                    type: string
+                  title:
+                    type: string
+                  status:
+                    type: string
+                required:
+                  - documentId
+                  - title
+                  - status
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+  /documents/{id}/versions/{versionId}:
+    get:
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: path
+          name: id
+          required: true
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: path
+          name: versionId
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documentId:
+                    type: string
+                  versionId:
+                    type: string
+                  versionNo:
+                    type: integer
+                    minimum: -9007199254740991
+                    maximum: 9007199254740991
+                  status:
+                    type: string
+                  isCurrent:
+                    type: boolean
+                  title:
+                    type: string
+                required:
+                  - documentId
+                  - versionId
+                  - versionNo
+                  - status
+                  - isCurrent
+                  - title
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+  /citations/{citationId}:
+    get:
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: path
+          name: citationId
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documentId:
+                    type: string
+                  versionId:
+                    type: string
+                  chunkId:
+                    type: string
+                  span:
+                    type: object
+                    properties:
+                      start:
+                        type: integer
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                      end:
+                        type: integer
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                    required:
+                      - start
+                      - end
+                    additionalProperties: false
+                  excerpt:
+                    type: string
+                required:
+                  - documentId
+                  - versionId
+                  - chunkId
+                  - span
+                  - excerpt
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "404":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+  /audit/retrieval:
+    get:
+      parameters:
+        - schema:
+            default: 50
+            type: integer
+            minimum: 1
+            maximum: 100
+          in: query
+          name: limit
+          required: false
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        eventId:
+                          type: string
+                        tenantId:
+                          type: string
+                        occurredAt:
+                          type: string
+                        eventType:
+                          type: string
+                        requestId:
+                          type: string
+                        principalId:
+                          type: string
+                        membershipId:
+                          type: string
+                        authEpoch:
+                          type: string
+                        redactedQuery:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        queryHash:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        candidateIds:
+                          anyOf:
+                            - type: array
+                              items:
+                                type: string
+                            - type: "null"
+                        scores:
+                          anyOf:
+                            - type: array
+                              items:
+                                type: number
+                            - type: "null"
+                        selectedIds:
+                          anyOf:
+                            - type: array
+                              items:
+                                type: string
+                            - type: "null"
+                        evidenceDecision:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        modelStatus:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        citations:
+                          anyOf:
+                            - type: array
+                              items:
+                                type: object
+                                properties:
+                                  documentId:
+                                    type: string
+                                  versionId:
+                                    type: string
+                                  chunkId:
+                                    type: string
+                                  span:
+                                    type: object
+                                    properties:
+                                      start:
+                                        type: integer
+                                        minimum: -9007199254740991
+                                        maximum: 9007199254740991
+                                      end:
+                                        type: integer
+                                        minimum: -9007199254740991
+                                        maximum: 9007199254740991
+                                    required:
+                                      - start
+                                      - end
+                                    additionalProperties: false
+                                  excerpt:
+                                    type: string
+                                required:
+                                  - documentId
+                                  - versionId
+                                  - chunkId
+                                  - span
+                                  - excerpt
+                                additionalProperties: false
+                            - type: "null"
+                        refusalReason:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        latencyMs:
+                          anyOf:
+                            - type: number
+                            - type: "null"
+                        answerHash:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                      required:
+                        - eventId
+                        - tenantId
+                        - occurredAt
+                        - eventType
+                        - requestId
+                        - principalId
+                        - membershipId
+                        - authEpoch
+                        - redactedQuery
+                        - queryHash
+                        - candidateIds
+                        - scores
+                        - selectedIds
+                        - evidenceDecision
+                        - modelStatus
+                        - citations
+                        - refusalReason
+                        - latencyMs
+                        - answerHash
+                      additionalProperties: false
+                required:
+                  - events
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+  /healthz:
+    get:
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                required:
+                  - status
+                additionalProperties: false
+  /readyz:
+    get:
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                required:
+                  - status
+                additionalProperties: false
+        "503":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false

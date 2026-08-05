@@ -15,6 +15,7 @@
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:db": "npm run test --workspace @securerag/db",
-    "test:db:catalog": "npm run test:catalog --workspace @securerag/db"
+    "test:db:catalog": "npm run test:catalog --workspace @securerag/db",
+    "test:api": "npm run test --workspace @securerag/api"
   }
 }

@@ -1,0 +1,34 @@
+import { writeFile } from 'node:fs/promises';
+import pg from 'pg';
+import YAML from 'yaml';
+import { SpyGenerator } from '@securerag/providers';
+import { buildApp } from './app.js';
+
+/**
+ * Regenerates the committed OpenAPI document at apps/api/openapi.yaml from the
+ * live route registrations (npm run openapi:gen --workspace @securerag/api).
+ *
+ * The pool here is never connected: it exists only so buildApp can register
+ * routes; no request ever reaches it during generation.
+ */
+const { Pool } = pg;
+const pool = new Pool({
+  host: 'localhost',
+  database: 'securerag',
+  user: 'securerag_api',
+  password: 'unused-for-openapi-generation',
+});
+
+try {
+  const app = await buildApp({ pool, providers: new SpyGenerator() });
+  await app.ready();
+  const document = app.swagger();
+  const yaml = YAML.stringify(document);
+  const target = new URL('../openapi.yaml', import.meta.url);
+  await writeFile(target, yaml);
+  const paths = Object.keys(document.paths ?? {}).length;
+  console.log(`openapi.yaml written (${yaml.length} bytes, ${paths} path(s))`);
+  await app.close();
+} finally {
+  await pool.end();
+}
