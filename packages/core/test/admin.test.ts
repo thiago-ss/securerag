@@ -166,7 +166,8 @@ describe('S1 admin domain: identity, memberships, groups, grants on real runtime
         targetPrincipalId: world.dave.id,
         role: 'member',
       });
-      expect(event?.authEpoch).toBe(String(before));
+      // Stamped with the POST-bump epoch (the era the change produced).
+      expect(event?.authEpoch).toBe(String(before + 1));
     });
 
     it('promotion to admin creates the mirror row; demotion/removal removes it', async () => {
@@ -442,7 +443,9 @@ describe('S1 admin domain: identity, memberships, groups, grants on real runtime
       const events = audit.filter((e) => e.eventType === 'group:changed');
       expect(events).toHaveLength(2);
       expect(events[1]?.filters).toMatchObject({ groupId: group.groupId });
-      expect(events[0]?.authEpoch).toBe(String(before + 1));
+      // Newest-first ordering: the most recent write carries before+2.
+      expect(events[0]?.authEpoch).toBe(String(before + 2));
+      expect(events[1]?.authEpoch).toBe(String(before + 1));
     });
   });
 

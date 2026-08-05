@@ -615,6 +615,48 @@ describe('S1 auth E2E — OIDC login, sessions, CSRF, admin management over HTTP
     expect(events.filter((e) => e.eventType === 'grant:changed')).toHaveLength(2);
   });
 
+  it('11b. malformed grant subjects are rejected at the boundary (no DoS via 22P02)', async () => {
+    const session = await loginViaOidc(base, provider, 'carol-sub');
+    const body = {
+      tenantId: world.tenantA.id,
+      documentId: world.docA.id,
+      subjectType: 'group',
+      subjectId: 'not-a-uuid',
+      capability: 'read',
+    };
+    const res = await fetch(`${base}/documents/${world.docA.id}/grants`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: session.cookieHeader,
+        'x-csrf-token': session.csrfToken,
+      },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(400);
+    const badRole = await fetch(`${base}/documents/${world.docA.id}/grants`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: session.cookieHeader,
+        'x-csrf-token': session.csrfToken,
+      },
+      body: JSON.stringify({ ...body, subjectType: 'tenant_role', subjectId: 'superuser' }),
+    });
+    expect(badRole.status).toBe(400);
+    // Retrieval must still work after the rejected attempts (no poisoned rows).
+    const q = await fetch(`${base}/retrieval/query`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: session.cookieHeader,
+        'x-csrf-token': session.csrfToken,
+      },
+      body: JSON.stringify({ tenantId: world.tenantA.id, question: 'secret formula' }),
+    });
+    expect(q.status).toBe(200);
+  });
+
   it('12. manage grant unlocks grants for a non-admin member over HTTP', async () => {
     const session = await loginViaOidc(base, provider, 'alice-sub');
     await db.superuserPool.query(

@@ -26,6 +26,7 @@ describe('migration runner', () => {
       '0003_rls_and_grants.sql',
       '0004_hybrid_retrieval.sql',
       '0005_oidc_sessions.sql',
+      '0006_security_invariants.sql',
     ]);
     const second = await applyMigrations(pool);
     expect(second.map((r) => r.filename)).toEqual(first.map((r) => r.filename));
@@ -76,6 +77,7 @@ describe('migration runner', () => {
         '0003_rls_and_grants.sql',
         '0004_hybrid_retrieval.sql',
         '0005_oidc_sessions.sql',
+        '0006_security_invariants.sql',
       ]);
       const { rows: tenants } = await db.superuserPool.query<{ tenant_id: string }>(
         'SELECT tenant_id FROM securerag.tenants',

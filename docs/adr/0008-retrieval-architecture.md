@@ -73,11 +73,25 @@ Rejected alternatives, with reasons:
 
 ## ef_search default
 
-The recall baseline gate (below) passes at every swept value; the smallest is chosen:
+**`hnsw.ef_search = 40`** (`RETRIEVAL_EF_SEARCH` in packages/core). HONEST LIMITATION (S6 review):
+with strict_order, recall and result counts are independent of ef_search at fixture scale
+(600 chunks ≪ hnsw.max_scan_tuples 20 000), so the baseline cannot discriminate ef_search values —
+the gate passes at every sweep point and the "smallest chosen" is a tie-break, not measurement.
+The production planner at fixture scale also prefers the exact grant-driven join over the HNSW
+scan, so the baseline exercises the index path only through the test-only forceIndex lever. The
+recall gate's genuinely sensitive dimensions are: starvation counts (0 required), the
+no-strict_order footgun control (must starve), and determinism. Actionable claims:
+strict_order is mandatory; ef_search=40 is the pgvector-recommended floor for this corpus size;
+re-run the baseline (packages/eval/test/recall-baseline.test.ts) at production scale before v1
+(G5 envelope benchmark) and re-pick ef_search from measured recall@k + p99 latency then.
+Re-run after any fixture or index change.
 
-**`hnsw.ef_search = 40`** (`RETRIEVAL_EF_SEARCH` in packages/core). With strict_order, recall and
-result counts are independent of ef_search; ef_search only trades latency on the first scan wave.
-Re-run the baseline (packages/eval/test/recall-baseline.test.ts) after any fixture or index change.
+## Arm pools (S6 review fix)
+
+Hybrid arms overfetch: per-arm `LIMIT = max(requested, RETRIEVAL_ARM_LIMIT=60)` (retrievalParams),
+so candidates ranked beyond the final result limit can still contribute to fusion; the final
+result `LIMIT` is applied after RRF. Ground truth in the recall harness uses the same arm pools,
+so pool-induced recall loss is now detectable.
 
 ## Measured recall (2026-08-05, 200 docs / 600 chunks / 40 labeled queries, one tenant)
 

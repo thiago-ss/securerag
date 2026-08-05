@@ -171,12 +171,17 @@ SELECT chunk_id, chunk_no, text_redacted, span_start, span_end,
        version_id, version_no, document_id, title, score AS rank
   FROM fused
  ORDER BY score DESC, chunk_id
- LIMIT $3`;
+ LIMIT $4`;
 
-/** Per-mode parameter layout; embedding is a pgvector literal text ('[...]'). */
+/**
+ * Per-mode parameter layout. Hybrid takes two limits: $3 = per-arm pool
+ * (overfetch so RRF can fuse candidates ranked beyond the final limit; never
+ * less than the requested limit) and $4 = the final result limit. Keyword and
+ * vector arms have a single limit.
+ */
 export function retrievalParams(
   mode: RetrievalMode,
-  args: { question: string; embedding?: string; limit: number },
+  args: { question: string; embedding?: string; limit: number; armLimit?: number },
 ): (string | number)[] {
   switch (mode) {
     case 'keyword':
@@ -184,9 +189,11 @@ export function retrievalParams(
     case 'vector':
       if (args.embedding === undefined) throw new Error('vector mode requires an embedding');
       return [args.embedding, args.limit];
-    case 'hybrid':
+    case 'hybrid': {
       if (args.embedding === undefined) throw new Error('hybrid mode requires an embedding');
-      return [args.question, args.embedding, args.limit];
+      const armLimit = Math.max(args.armLimit ?? RETRIEVAL_ARM_LIMIT, args.limit);
+      return [args.question, args.embedding, armLimit, args.limit];
+    }
   }
 }
 
@@ -244,7 +251,7 @@ export async function executeRetrievalQuery(
     await client.query('SET LOCAL enable_indexscan = off');
     await client.query('SET LOCAL enable_bitmapscan = off');
   } else {
-    if (settings.forceIndex) {
+    if (settings.forceIndex && mode !== 'keyword') {
       await client.query('SET LOCAL enable_seqscan = off');
       await client.query('SET LOCAL enable_sort = off');
     }

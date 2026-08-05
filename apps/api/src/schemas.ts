@@ -13,6 +13,7 @@ import { z } from 'zod';
  */
 
 export const uuidSchema = z.string().uuid();
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const retrievalQuerySchema = z.object({
   tenantId: uuidSchema,
@@ -102,6 +103,14 @@ export const grantBodySchema = z.object({
   subjectType: z.enum(['principal', 'group', 'tenant_role']),
   subjectId: z.string().min(1).max(200),
   capability: z.enum(['read', 'write', 'manage']),
+}).superRefine((v, ctx) => {
+  if (v.subjectType === 'principal' || v.subjectType === 'group') {
+    if (!UUID_RE.test(v.subjectId)) {
+      ctx.addIssue({ code: 'custom', path: ['subjectId'], message: 'must be a uuid for principal/group grants' });
+    }
+  } else if (!['admin', 'member', 'security_reviewer'].includes(v.subjectId)) {
+    ctx.addIssue({ code: 'custom', path: ['subjectId'], message: 'must be a tenant role for tenant_role grants' });
+  }
 });
 export type GrantBody = z.infer<typeof grantBodySchema>;
 

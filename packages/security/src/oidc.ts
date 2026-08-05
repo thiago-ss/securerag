@@ -58,6 +58,8 @@ export interface PendingLogin {
   redirectUri: string;
   /** Epoch ms after which the flow is invalid. */
   expiresAt: number;
+  /** Epoch ms when the flow was created (eviction order). */
+  createdAt: number;
 }
 
 export interface IdTokenClaims {
@@ -105,6 +107,33 @@ export class InvalidIdTokenError extends Error {
 const DEFAULT_CLOCK_SKEW_SECONDS = 120;
 const DEFAULT_MAX_IAT_SKEW_SECONDS = 300;
 const DEFAULT_JWKS_CACHE_TTL_MS = 300_000;
+
+function safeHostname(url: string): string | null {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/** Discovery endpoints must be https and on the issuer's host; loopback http is
+ * permitted for local/demo issuers (Keycloak/fake provider). */
+function assertSafeEndpoint(endpoint: string, issuerHost: string | null): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new OidcProviderError();
+  }
+  const host = parsed.hostname.toLowerCase();
+  const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
+    throw new OidcProviderError();
+  }
+  if (issuerHost !== null && host !== issuerHost && !(loopback && issuerHost === 'localhost')) {
+    throw new OidcProviderError();
+  }
+}
 
 function nowSeconds(now: () => number): number {
   return Math.floor(now() / 1000);
@@ -243,9 +272,30 @@ export interface IdTokenValidationContext {
 /** In-memory one-time login flow store (state/nonce/codeVerifier binding). */
 export class InMemoryLoginStore {
   private readonly entries = new Map<string, PendingLogin>();
+  private readonly maxEntries: number;
+
+  constructor(maxEntries = 10_000) {
+    this.maxEntries = maxEntries;
+  }
 
   add(flow: PendingLogin): void {
+    if (this.entries.size >= this.maxEntries) {
+      this.evictExpired();
+      if (this.entries.size >= this.maxEntries) {
+        // Bounded store: drop the oldest entry so a login-flood cannot grow
+        // memory without limit (availability invariant).
+        const oldest = [...this.entries.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+        if (oldest) this.entries.delete(oldest[0]);
+      }
+    }
     this.entries.set(flow.state, flow);
+  }
+
+  private evictExpired(): void {
+    const now = Date.now();
+    for (const [state, flow] of this.entries) {
+      if (now > flow.expiresAt) this.entries.delete(state);
+    }
   }
 
   /** One-time consumption: the entry is deleted before expiry is checked, so a
@@ -256,6 +306,10 @@ export class InMemoryLoginStore {
     this.entries.delete(state);
     if (Date.now() > flow.expiresAt) return null;
     return flow;
+  }
+
+  size(): number {
+    return this.entries.size;
   }
 }
 
@@ -273,9 +327,16 @@ export class OidcClient {
     return (this.config.now ?? Date.now)();
   }
 
-  /** Discovery with TTL-less memoization (metadata is immutable per issuer). */
+  /** Discovery with memoization of SUCCESSES only: a failed discovery is retried
+   * on the next call, so a transient provider outage cannot wedge logins
+   * forever (availability invariant). */
   async discover(): Promise<OidcMetadata> {
-    this.discoveryPromise ??= this.discoverOnce();
+    if (this.discoveryPromise === null) {
+      this.discoveryPromise = this.discoverOnce().catch((err) => {
+        this.discoveryPromise = null;
+        throw err;
+      });
+    }
     return this.discoveryPromise;
   }
 
@@ -310,6 +371,16 @@ export class OidcClient {
       !doc.code_challenge_methods_supported.includes('S256')
     ) {
       throw new OidcProviderError();
+    }
+    const issuerHost = safeHostname(this.config.issuer);
+    const endpoints = [
+      doc.authorization_endpoint,
+      doc.token_endpoint,
+      doc.jwks_uri,
+      ...(doc.end_session_endpoint !== undefined ? [doc.end_session_endpoint] : []),
+    ] as string[];
+    for (const endpoint of endpoints) {
+      assertSafeEndpoint(endpoint, issuerHost);
     }
     return {
       issuer: doc.issuer,
@@ -364,6 +435,7 @@ export class OidcClient {
       codeChallenge: base64urlEncode(createHash('sha256').update(codeVerifier).digest()),
       redirectUri: this.config.redirectUri,
       expiresAt: now + 10 * 60_000,
+      createdAt: now,
     };
   }
 

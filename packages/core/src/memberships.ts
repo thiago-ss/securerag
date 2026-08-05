@@ -203,13 +203,17 @@ async function syncAdminMirror(
   }
 }
 
-/** Epoch bump + audited membership:changed event in the SAME transaction. */
+/** Epoch bump + audited membership:changed event in the SAME transaction.
+ * The audit event is stamped with the POST-bump epoch so epoch-correlated
+ * reconstruction attributes the change to the era it produced. */
 async function bumpAndAudit(
   client: import('pg').PoolClient,
   ctx: import('@securerag/security').SecurityContext,
   filters: Record<string, unknown>,
 ): Promise<void> {
-  await client.query('SELECT securerag.bump_authorization_epoch()');
+  const bumped = await client.query<{ epoch: string }>(
+    'SELECT securerag.bump_authorization_epoch() AS epoch',
+  );
   await appendAudit({
     client,
     event: {
@@ -217,7 +221,7 @@ async function bumpAndAudit(
       requestId: ctx.requestId,
       principalId: ctx.principalId,
       membershipId: ctx.membershipId,
-      authEpoch: ctx.authEpoch,
+      authEpoch: bumped.rows[0]?.epoch ?? ctx.authEpoch,
       filters,
     },
   });

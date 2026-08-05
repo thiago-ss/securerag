@@ -203,7 +203,9 @@ export async function addGrant(pool: Pool, params: GrantWriteParams): Promise<Gr
     );
     const row = rows[0];
     if (row === undefined) return null;
-    await client.query('SELECT securerag.bump_authorization_epoch()');
+    const bumped = await client.query<{ epoch: string }>(
+      'SELECT securerag.bump_authorization_epoch() AS epoch',
+    );
     await appendAudit({
       client,
       event: {
@@ -211,7 +213,7 @@ export async function addGrant(pool: Pool, params: GrantWriteParams): Promise<Gr
         requestId: ctx.requestId,
         principalId: ctx.principalId,
         membershipId: ctx.membershipId,
-        authEpoch: ctx.authEpoch,
+        authEpoch: bumped.rows[0]?.epoch ?? ctx.authEpoch,
         filters: {
           documentId: params.documentId,
           subjectType: params.subjectType,
@@ -240,7 +242,9 @@ export async function removeGrant(
       [params.documentId, params.grantId],
     );
     if (rows[0] === undefined) return false;
-    await client.query('SELECT securerag.bump_authorization_epoch()');
+    const bumped = await client.query<{ epoch: string }>(
+      'SELECT securerag.bump_authorization_epoch() AS epoch',
+    );
     await appendAudit({
       client,
       event: {
@@ -248,7 +252,7 @@ export async function removeGrant(
         requestId: ctx.requestId,
         principalId: ctx.principalId,
         membershipId: ctx.membershipId,
-        authEpoch: ctx.authEpoch,
+        authEpoch: bumped.rows[0]?.epoch ?? ctx.authEpoch,
         filters: { documentId: params.documentId, grantId: params.grantId },
       },
     });
