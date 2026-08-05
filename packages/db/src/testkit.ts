@@ -29,6 +29,8 @@ export interface TestDb {
   migrationPool: pg.Pool;
   apiPool: pg.Pool;
   workerPool: pg.Pool;
+  purgePool: pg.Pool;
+  auditRetentionPool: pg.Pool;
   host: string;
   port: number;
   stop: () => Promise<void>;
@@ -357,7 +359,9 @@ export async function getTestDb(): Promise<TestDb> {
   });
   await applyMigrations(migrationPool);
 
-  const makePool = (role: 'securerag_api' | 'securerag_worker'): pg.Pool =>
+  const makePool = (
+    role: 'securerag_api' | 'securerag_worker' | 'securerag_purge' | 'securerag_audit_retention',
+  ): pg.Pool =>
     new Pool({
       host,
       port,
@@ -372,6 +376,8 @@ export async function getTestDb(): Promise<TestDb> {
     migrationPool,
     apiPool: makePool('securerag_api'),
     workerPool: makePool('securerag_worker'),
+    purgePool: makePool('securerag_purge'),
+    auditRetentionPool: makePool('securerag_audit_retention'),
     host,
     port,
     stop: async () => {
@@ -379,6 +385,8 @@ export async function getTestDb(): Promise<TestDb> {
       await migrationPool.end();
       await cached?.apiPool.end();
       await cached?.workerPool.end();
+      await cached?.purgePool.end();
+      await cached?.auditRetentionPool.end();
       await container.stop();
       cached = null;
     },
