@@ -39,6 +39,22 @@ restrictive, combined with AND semantics (never permissive OR that weakens isola
 **Authorization epoch**: monotonic value bumped by membership, group, grant, document, or retention
 decisions; carried in the verified context; rechecked immediately before the first response byte.
 
+## Amendment 2026-08-05 — single-policy-per-table invariant (PostgreSQL 18.4 bug workaround)
+
+Reproduced on stock `postgres:18.4` and `pgvector/pgvector:0.8.6-pg18`: a table with
+`AS RESTRICTIVE` policies returns **zero rows for non-superusers even with
+`USING (true)`**; permissive policies behave correctly. This is an upstream
+PostgreSQL 18.4 defect (plan-time folding of restrictive security quals to false).
+
+Workaround: exactly **one** policy per RLS table, declared `AS PERMISSIVE`,
+whose expression carries the complete isolation predicate (`tenant_id = context`
+or the membership/admin predicate). With exactly one policy per table there is no
+permissive OR-combination to weaken isolation, so restrictive/AND semantics are
+preserved. The catalog test now asserts **exactly one policy per RLS table** and
+that its USING expression references the security-context GUCs; any second policy
+fails CI. Revisit and restore `AS RESTRICTIVE` when the upstream fix ships
+(tracked in the risk register).
+
 ## Consequences
 
 - Catalog tests enumerate every tenant table, policy, owner, role attribute, grant, view, function;
