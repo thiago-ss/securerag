@@ -14,6 +14,7 @@
     "start": "tsx src/server.ts"
   },
   "dependencies": {
+    "@fastify/multipart": "^9.4.0",
     "@fastify/swagger": "^9.8.1",
     "@securerag/core": "^0.1.0",
     "@securerag/providers": "^0.1.0",
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@securerag/db": "^0.1.0",
     "@securerag/eval": "^0.1.0",
+    "@securerag/worker": "^0.1.0",
     "@types/pg": "^8.15.4",
     "testcontainers": "^12.1.0",
     "tsx": "^4.23.6",

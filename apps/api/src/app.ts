@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { Pool } from 'pg';
 import Fastify, {
   type FastifyError,
   type FastifyInstance,
 } from 'fastify';
 import fastifySwagger from '@fastify/swagger';
+import fastifyMultipart from '@fastify/multipart';
 import { ZodError, z } from 'zod';
 import {
   InMemoryLoginStore,
@@ -24,15 +26,18 @@ import {
   type SessionRow,
 } from '@securerag/security';
 import {
-  getRetentionPolicy,
-  upsertRetentionPolicy,  addGrant,
+  addGrant,
   addGroupMember,
   addMembership,
+  canManage,
   createGroup,
   DEFAULT_PII_CONFIG,
   deleteGroup,
   getDocument,
+  getJobStatus,
+  getSourceObjectKey,
   getVersion,
+  getRetentionPolicy,
   listAudit,
   listGrants,
   listGroups,
@@ -46,9 +51,13 @@ import {
   runRetrieval,
   setMembershipActive,
   setMembershipRole,
+  sourceObjectKey,
+  stageUpload,
   upsertPrincipal,
+  upsertRetentionPolicy,
   type AuditRecord,
   type PiiConfig,
+  type SourceObjectStore,
 } from '@securerag/core';
 import type { AnswerGenerator } from '@securerag/providers';
 import type { OracleFacts } from '@securerag/eval/src/oracle.js';
@@ -70,6 +79,8 @@ import {
   groupMemberBodySchema,
   groupMemberRemoveQuerySchema,
   groupRemoveQuerySchema,
+  jobParamsSchema,
+  jobStatusSchema,
   meSchema,
   membershipCreateResponseSchema,
   membershipCreateSchema,
@@ -87,8 +98,11 @@ import {
   retentionPolicySchema,
   retrievalOutcomeSchema,
   retrievalQuerySchema,
+  sourceParamsSchema,
   statusSchema,
   tenantQuerySchema,
+  uploadParamsSchema,
+  uploadResponseSchema,
   uuidSchema,
   versionInfoSchema,
   versionParamsSchema,
@@ -128,6 +142,12 @@ export interface ApiDeps {
    * pii:read), and citation excerpts honor pii:read on human surfaces.
    */
   pii?: PiiConfig;
+  /**
+   * Source object store (S2, ADR-0007): the upload route writes objects
+   * (SSE-S3 via the S3 adapter; in-memory in CI) and the source stream route
+   * reads them. The worker processes the same store the API wrote to.
+   */
+  store: SourceObjectStore;
 }
 
 export interface OidcApiConfig {
@@ -302,6 +322,12 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
         },
       },
     },
+  });
+
+  // S2 uploads: bounded multipart (50 MB cap, single file part). Violations
+  // surface as the generic 400 INVALID_REQUEST via the error handler.
+  await app.register(fastifyMultipart, {
+    limits: { fileSize: 50 * 1024 * 1024, files: 1, parts: 2, fields: 0 },
   });
 
   // Responses are plain JSON.stringify of handler values: no schema-driven
@@ -1014,6 +1040,148 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
         if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
         throw err;
       }
+    },
+  );
+
+  // ---------- S2 ingestion: upload -> job -> authorized source stream (ADR-0007) ----------
+  // The upload route stores the object (SSE-S3, tenant-prefixed
+  // content-addressed key) and stages the PENDING version + ingest job; the
+  // worker runs the pipeline. The source route streams the object through
+  // the API after a per-request RLS + grant re-check — no public URLs ever.
+
+  app.post(
+    '/documents/:id/versions/upload',
+    {
+      schema: {
+        params: toFastifyJsonSchema(uploadParamsSchema),
+        response: {
+          201: toFastifyJsonSchema(uploadResponseSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const params = uploadParamsSchema.parse(request.params);
+      const part = await request.file();
+      if (part === undefined) return reply.code(400).send(INVALID_REQUEST);
+      // Bounded by the multipart plugin (50 MB); toBuffer honors the cap.
+      const bytes = await part.toBuffer();
+      if (bytes.length === 0) return reply.code(400).send(INVALID_REQUEST);
+      const requestId = newRequestId();
+      const sha256Hex = createHash('sha256').update(bytes).digest('hex');
+      const filename = part.filename ?? 'document';
+      const contentType = part.mimetype ?? '';
+      const staged = await acrossTenants(pool, request.principalId, async (tenantId) => {
+        // Manage gate first (the owning tenant's probe passes; all others
+        // return null identically), then store the object, then stage the
+        // version + job. A DB failure deletes the object best-effort.
+        const manageable = await canManage(pool, {
+          tenantId,
+          principalId: request.principalId,
+          requestId,
+          documentId: params.id,
+        });
+        if (!manageable) return null;
+        const key = sourceObjectKey(tenantId, sha256Hex, filename);
+        await deps.store.put(key, bytes);
+        try {
+          return await stageUpload(pool, {
+            tenantId,
+            principalId: request.principalId,
+            requestId,
+            documentId: params.id,
+            objectKey: key,
+            sha256Hex,
+            filename,
+            contentType,
+          });
+        } catch (err) {
+          await deps.store.deleteSources([key]).catch(() => {});
+          throw err;
+        }
+      });
+      if (staged === null) return reply.code(404).send(NOT_FOUND);
+      return reply.code(201).send({
+        jobId: staged.jobId,
+        documentId: params.id,
+        versionId: staged.versionId,
+        status: 'pending',
+      });
+    },
+  );
+
+  app.get(
+    '/documents/:id/versions/:versionId/source',
+    {
+      schema: {
+        params: toFastifyJsonSchema(sourceParamsSchema),
+        response: {
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const params = sourceParamsSchema.parse(request.params);
+      const requestId = newRequestId();
+      void reply.header('x-request-id', requestId);
+      const key = await acrossTenants(pool, request.principalId, (tenantId) =>
+        getSourceObjectKey(pool, {
+          tenantId,
+          principalId: request.principalId,
+          requestId,
+          documentId: params.id,
+          versionId: params.versionId,
+        }),
+      );
+      // Foreign/nonexistent/not-published versions AND missing objects share
+      // the same 404 body (no enumeration).
+      if (key === null) return reply.code(404).send(NOT_FOUND);
+      const bytes = await deps.store.get(key);
+      if (bytes === null) return reply.code(404).send(NOT_FOUND);
+      return reply
+        .header('content-type', 'application/octet-stream')
+        .header('content-length', String(bytes.length))
+        .send(bytes);
+    },
+  );
+
+  app.get(
+    '/jobs/:jobId',
+    {
+      schema: {
+        params: toFastifyJsonSchema(jobParamsSchema),
+        response: {
+          200: toFastifyJsonSchema(jobStatusSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const params = jobParamsSchema.parse(request.params);
+      const requestId = newRequestId();
+      void reply.header('x-request-id', requestId);
+      const job = await acrossTenants(pool, request.principalId, (tenantId) =>
+        getJobStatus(pool, {
+          tenantId,
+          principalId: request.principalId,
+          requestId,
+          jobId: params.jobId,
+        }),
+      );
+      if (job === null) return reply.code(404).send(NOT_FOUND);
+      return {
+        jobId: job.jobId,
+        jobType: job.jobType,
+        status: job.status,
+        createdAt: job.createdAt.toISOString(),
+        updatedAt: job.updatedAt.toISOString(),
+      };
     },
   );
 

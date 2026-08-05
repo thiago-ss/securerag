@@ -117,8 +117,9 @@ export async function canManage(pool: Pool, params: CanManageParams): Promise<bo
 }
 
 /** Same manage gate on the caller's open transaction (used by the management
- * functions below so the check and the write share one context). */
-async function manageAllowed(client: PoolClient, documentId: string): Promise<boolean> {
+ * functions below so the check and the write share one context). Also used
+ * by the S2 upload stage (ingestion.ts) on its own transaction. */
+export async function manageAllowed(client: PoolClient, documentId: string): Promise<boolean> {
   const { rows } = await client.query<{ allowed: boolean }>(
     `SELECT ${manageGateSql('$1', 'securerag.ctx_tenant_id()')} AS allowed`,
     [documentId],

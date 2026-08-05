@@ -1,5 +1,6 @@
 /**
- * Worker daemon (S9, ADR-0010): the purge pipeline's PRODUCER + consumer loop.
+ * Worker daemon (S9/S2; ADR-0010, ADR-0007): the purge + ingest pipelines'
+ * PRODUCER + consumer loop.
  *
  * The queue machinery alone is inert without a producer (S9 review F1):
  * this daemon
@@ -9,15 +10,31 @@
  *      schedule idempotent; a job already queued/running/succeeded for today
  *      is never duplicated).
  *   2. CONSUMES claimable jobs (pending or lease-expired running) with SKIP
- *      LOCKED and runs the purge handler.
+ *      LOCKED and runs the purge or ingest handler.
  *   3. Graceful shutdown on SIGTERM/SIGINT.
  *
  * Config comes from the environment (Zod-validated): PGHOST/PGPORT/PGDATABASE
  * plus WORKER_USER/WORKER_PASSWORD and PURGE_USER/PURGE_PASSWORD for the two
  * narrow credentials. No secrets in code.
+ *
+ * S2 seams: SOURCE_STORE selects the object adapter ('memory' for CI/demo,
+ * 's3' for S3/MinIO with SSE-S3); CLAMAV_HOST selects the real clamd adapter
+ * (unset → the deterministic fake). The real adapters are never exercised in
+ * CI without their containers (ADR-0007; r8 §1/§2).
  */
 import { createRuntimePool } from '@securerag/security';
-import { InMemorySourceObjectStore, type SourceObjectStore } from '@securerag/core';
+import {
+  DETERMINISTIC_EMBEDDING,
+  InMemorySourceObjectStore,
+  S3SourceObjectStore,
+  type SourceObjectStore,
+} from '@securerag/core';
+import {
+  ClamavClamdAdapter,
+  DETERMINISTIC_MALWARE_SCANNER,
+  HEURISTIC_INJECTION_DETECTOR,
+  STANDARD_EXTRACTION,
+} from '@securerag/providers';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import { runWorkerOnce, type WorkerDeps } from './index.js';
@@ -32,9 +49,36 @@ const envSchema = z.object({
   PURGE_PASSWORD: z.string(),
   POLL_INTERVAL_MS: z.coerce.number().default(10_000),
   CLAIM_LIMIT: z.coerce.number().default(10),
-  /** Object storage seam: v1 in-memory; an S3 adapter replaces it with S2. */
-  SOURCE_STORE: z.enum(['memory']).default('memory'),
+  /** Object storage seam (ADR-0007): memory for CI/demo; s3 behind S3_* config. */
+  SOURCE_STORE: z.enum(['memory', 's3']).default('memory'),
+  S3_ENDPOINT: z.string().optional(),
+  S3_REGION: z.string().default('us-east-1'),
+  S3_BUCKET: z.string().default('securerag-objects'),
+  S3_ACCESS_KEY_ID: z.string().optional(),
+  S3_SECRET_ACCESS_KEY: z.string().optional(),
+  S3_FORCE_PATH_STYLE: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
+  /** clamd adapter (r8 §2): only built when CLAMAV_HOST is set. */
+  CLAMAV_HOST: z.string().optional(),
+  CLAMAV_PORT: z.coerce.number().default(3310),
 });
+
+function buildStore(env: z.infer<typeof envSchema>): SourceObjectStore {
+  if (env.SOURCE_STORE === 's3') {
+    return new S3SourceObjectStore({
+      bucket: env.S3_BUCKET,
+      ...(env.S3_ENDPOINT !== undefined ? { endpoint: env.S3_ENDPOINT } : {}),
+      region: env.S3_REGION,
+      forcePathStyle: env.S3_FORCE_PATH_STYLE,
+      ...(env.S3_ACCESS_KEY_ID !== undefined && env.S3_SECRET_ACCESS_KEY !== undefined
+        ? { accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY }
+        : {}),
+    });
+  }
+  return new InMemorySourceObjectStore();
+}
 
 export function buildDeps(env: z.infer<typeof envSchema>): WorkerDeps {
   const base = {
@@ -53,10 +97,19 @@ export function buildDeps(env: z.infer<typeof envSchema>): WorkerDeps {
     user: env.PURGE_USER,
     password: env.PURGE_PASSWORD,
   });
-  const store: SourceObjectStore = env.SOURCE_STORE === 'memory'
-    ? new InMemorySourceObjectStore()
-    : new InMemorySourceObjectStore();
-  return { workerPool, purgePool, store };
+  const store = buildStore(env);
+  const scanner = env.CLAMAV_HOST !== undefined
+    ? new ClamavClamdAdapter({ host: env.CLAMAV_HOST, port: env.CLAMAV_PORT })
+    : DETERMINISTIC_MALWARE_SCANNER;
+  return {
+    workerPool,
+    purgePool,
+    store,
+    extractor: STANDARD_EXTRACTION,
+    scanner,
+    detector: HEURISTIC_INJECTION_DETECTOR,
+    embedding: DETERMINISTIC_EMBEDDING,
+  };
 }
 
 const DAILY_KEY = (now: Date): string => `purge:${now.toISOString().slice(0, 10)}`;

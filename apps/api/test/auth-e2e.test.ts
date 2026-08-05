@@ -5,6 +5,7 @@ import type { Pool } from 'pg';
 import type { FastifyInstance } from 'fastify';
 import { SpyGenerator } from '@securerag/providers';
 import { FakeOidcProvider } from '@securerag/security/src/testkit.js';
+import { InMemorySourceObjectStore } from '@securerag/core';
 import {
   getTestDb,
   resetData,
@@ -74,7 +75,12 @@ describe('S1 auth E2E — OIDC login, sessions, CSRF, admin management over HTTP
       acrValues: ['urn:securerag:acr:1'],
       postLoginRedirectPath: '/',
     };
-    app = await buildApp({ pool: api, providers: new SpyGenerator(), oidc });
+    app = await buildApp({
+      pool: api,
+      providers: new SpyGenerator(),
+      store: new InMemorySourceObjectStore(),
+      oidc,
+    });
     await app.listen({ port: 0, host: '127.0.0.1' });
     base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   });
