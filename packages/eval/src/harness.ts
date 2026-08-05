@@ -33,6 +33,7 @@ export interface CaseResult {
   status: number;
   decision: string;
   body: string;
+  headers: string;
   uniqueTuple: string;
   violations: string[];
 }
@@ -81,7 +82,9 @@ export interface HarnessOptions {
 }
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-const PII_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\+1-555-\d{8}|\b7\d{8}\b|\b4\d{15}\b/gi;
+// Dashed SSN and spaced card formats (matches the corpus's synthetic PII; far
+// less likely to false-positive on hex canaries than bare digit runs).
+const PII_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b\d{3}-\d{2}-\d{4}\b|\b4\d{3} \d{4} \d{4} \d{4}\b/gi;
 
 export async function runAdversarialHarness(
   opts: HarnessOptions,
@@ -167,26 +170,32 @@ export async function runAdversarialHarness(
         }
       }
 
-      // Response scan: canaries belonging to OTHER tenants; foreign doc ids;
-      // audit rows from foreign tenants.
+      // Response scan: canaries belonging to OTHER tenants; foreign doc/chunk/
+      // version ids; foreign tenant ids in audit rows; headers too.
       const body = result.body;
-      for (const c2 of foreignCanaries(opts, tenantId, body)) {
+      const responseText = `${body}\n${result.headers}`;
+      for (const c2 of foreignCanaries(opts, tenantId, responseText)) {
         violations.push(`foreign canary ${c2} in response`);
         metrics.unauthorizedDisclosures += 1;
       }
-      const foreignDocIds = foreignDocumentIds(opts, tenantId, body);
+      const foreignDocIds = foreignDocumentIds(opts, tenantId, responseText);
       if (foreignDocIds.length > 0) {
         violations.push(`foreign document ids in response: ${foreignDocIds.join(',')}`);
         metrics.unauthorizedDisclosures += 1;
       }
+      const foreignChunkIds = foreignChunkVersionIds(opts, tenantId, responseText);
+      if (foreignChunkIds.length > 0) {
+        violations.push(`foreign chunk/version ids in response: ${foreignChunkIds.join(',')}`);
+        metrics.unauthorizedDisclosures += 1;
+      }
       if (c.surface === 'audit' && result.status === 200) {
-        const foreign = foreignTenantIds(opts, tenantId, body);
+        const foreign = foreignTenantIds(opts, tenantId, responseText);
         if (foreign.length > 0) {
           violations.push(`foreign tenant id in audit response`);
           metrics.auditIsolationFailures += 1;
         }
       }
-      if (PII_RE.test(body)) {
+      if (PII_RE.test(responseText)) {
         const principal = opts.world.facts.principals.find((p2) => p2.id === principalId);
         if (principal?.piiRead !== true) {
           violations.push('raw PII in response for non-pii-read principal');
@@ -195,7 +204,8 @@ export async function runAdversarialHarness(
       }
 
       // Outcome expectations: denied cases must not carry content; allowed query
-      // cases must answer (positive controls).
+      // cases must answer; allowed non-query cases must succeed (positive
+      // controls on every surface).
       if (c.expect === 'denied') {
         metrics.refusalRecallDenominator += 1;
         const refused =
@@ -207,6 +217,9 @@ export async function runAdversarialHarness(
         metrics.authorizedAnswerDenominator += 1;
         if (result.decision === 'answered') metrics.authorizedAnswerSuccess += 1;
         else violations.push(`allowed query did not answer: ${result.status}/${result.decision}`);
+      }
+      if (c.expect === 'allowed' && c.surface !== 'query' && result.status !== 200) {
+        violations.push(`allowed ${c.surface} did not succeed: ${result.status}`);
       }
 
       results.push({ ...result, uniqueTuple: tuple, violations });
@@ -250,26 +263,32 @@ async function executeCase(
     cookie: session.cookieHeader,
   };
   let body = '';
+  let headerText = '';
   let status = 0;
   let decision = '';
+
+  const capture = async (res: Response): Promise<Response> => {
+    headerText = [...res.headers.entries()].map(([k, v]) => `${k}: ${v}`).join('\n');
+    return res;
+  };
 
   try {
     switch (c.surface) {
       case 'query': {
         headers['content-type'] = 'application/json';
         headers['x-csrf-token'] = session.csrfToken;
-        const res = await fetch(`${opts.base}/retrieval/query`, {
+        const res = await capture(await fetch(`${opts.base}/retrieval/query`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ tenantId: c.tenantId, question: c.prompt ?? '' }),
-        });
+        }));
         status = res.status;
         body = await res.text();
         decision = parseDecision(body);
         break;
       }
       case 'document': {
-        const res = await fetch(`${opts.base}/documents/${c.targetId}`, { headers });
+        const res = await capture(await fetch(`${opts.base}/documents/${c.targetId}`, { headers }));
         status = res.status;
         body = await res.text();
         decision = status === 200 ? 'found' : 'not-found';
@@ -277,14 +296,14 @@ async function executeCase(
       }
       case 'version': {
         const [docId, versionId] = (c.targetId ?? '/').split('/');
-        const res = await fetch(`${opts.base}/documents/${docId}/versions/${versionId}`, { headers });
+        const res = await capture(await fetch(`${opts.base}/documents/${docId}/versions/${versionId}`, { headers }));
         status = res.status;
         body = await res.text();
         decision = status === 200 ? 'found' : 'not-found';
         break;
       }
       case 'citation': {
-        const res = await fetch(`${opts.base}/citations/${c.targetId}`, { headers });
+        const res = await capture(await fetch(`${opts.base}/citations/${c.targetId}`, { headers }));
         status = res.status;
         body = await res.text();
         decision = status === 200 ? 'found' : 'not-found';
@@ -292,7 +311,7 @@ async function executeCase(
       }
       case 'audit': {
         headers['x-csrf-token'] = session.csrfToken;
-        const res = await fetch(`${opts.base}/audit/retrieval?limit=50`, { headers });
+        const res = await capture(await fetch(`${opts.base}/audit/retrieval?limit=50`, { headers }));
         status = res.status;
         body = await res.text();
         decision = status === 200 ? 'ok' : 'error';
@@ -304,7 +323,7 @@ async function executeCase(
     status = 0;
   }
 
-  return { name: c.name, surface: c.surface, expect: c.expect, status, decision, body, uniqueTuple: '', violations: [] };
+  return { name: c.name, surface: c.surface, expect: c.expect, status, decision, body, headers: headerText, uniqueTuple: '', violations: [] };
 }
 
 function parseDecision(body: string): string {
@@ -333,12 +352,27 @@ function foreignCanaries(opts: HarnessOptions, tenantId: string, text: string): 
   return found;
 }
 
-function foreignDocumentIds(opts: HarnessOptions, tenantId: string, body: string): string[] {
+function foreignDocumentIds(opts: HarnessOptions, tenantId: string, text: string): string[] {
   const found: string[] = [];
-  for (const m of body.matchAll(UUID_RE)) {
+  for (const m of text.matchAll(UUID_RE)) {
     const id = m[0].toLowerCase();
     const doc = opts.world.facts.documents.find((d) => d.documentId === id);
     if (doc !== undefined && doc.tenantId !== tenantId) found.push(id);
+  }
+  return [...new Set(found)];
+}
+
+/** Foreign chunk and version ids (citation/version surfaces). */
+function foreignChunkVersionIds(opts: HarnessOptions, tenantId: string, text: string): string[] {
+  const found: string[] = [];
+  for (const m of text.matchAll(UUID_RE)) {
+    const id = m[0].toLowerCase();
+    const chunk = opts.world.facts.chunks.find((c) => c.chunkId === id);
+    const version = opts.world.facts.versions.find((v) => v.versionId === id);
+    if ((chunk !== undefined && chunk.tenantId !== tenantId) ||
+        (version !== undefined && version.tenantId !== tenantId)) {
+      found.push(id);
+    }
   }
   return [...new Set(found)];
 }
@@ -359,7 +393,8 @@ function sanitizeReport(
   report: AdversarialReport,
   results: CaseResult[],
 ): unknown {
-  const redact = (s: string): string => s.replace(/CANARY-[A-Za-z0-9-]+/g, '<CANARY>');
+  const redact = (s: string): string =>
+    s.replace(/CANARY-[A-Za-z0-9-]+/g, '<CANARY>').replace(PII_RE, '<PII>');
   const plain = JSON.parse(JSON.stringify(report)) as Record<string, unknown>;
   return {
     ...plain,

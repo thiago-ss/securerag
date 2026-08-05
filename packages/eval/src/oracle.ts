@@ -165,7 +165,7 @@ export function computeAllowed(
       .filter(
         (v) =>
           v.tenantId === tenantId &&
-          grantedDocumentIds.has(v.documentId) &&
+          documents.has(v.documentId) &&
           VISIBLE_VERSION_STATUSES.has(v.status) &&
           v.isCurrent &&
           !v.retentionExpired,

@@ -103,8 +103,10 @@ export async function buildCanaryCorpus(
   const piiValues = {
     email: `ops.${canaryHex('pii', 'email').slice(0, 8)}@synthetic.example`,
     phone: `+1-555-${canaryHex('pii', 'phone').slice(0, 8)}`,
-    ssn: `7${canaryHex('pii', 'ssn').slice(0, 8)}`,
-    card: `411111111111${canaryHex('pii', 'card').slice(0, 4)}`,
+    // Dashed SSN and spaced card formats: the harness PII regex scans these
+    // exact shapes, so they must not be bare digit runs (hex-canary ambiguity).
+    ssn: '700-05-1000',
+    card: `4111 1111 1111 ${canaryHex('pii', 'card').slice(0, 4)}`,
   };
 
   const principalRows: { id: string; provider: string; externalSubject: string; displayName: string; piiRead: boolean }[] = [];
