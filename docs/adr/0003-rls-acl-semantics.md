@@ -72,6 +72,56 @@ upstream folding defect as AS RESTRICTIVE. Explicit subquery-free USING
 expressions are therefore mandatory; WITH CHECK (execution-time) may carry
 subqueries (admin mirror, expiry proofs).
 
+## Amendment 2026-08-05 (S3) — history capability, ACL listing, citation/source semantics
+
+**History = manage capability.** A principal may observe NON-CURRENT version
+metadata of a document iff it holds a direct `manage` grant on that document
+(principal / group / tenant_role subject). This is enforced deterministically
+in SQL via the new `securerag.manage_scope` security_invoker view (migration
+0010) inside the verified security context, and audited as `document:history`.
+Read/write grants do not enable history; the tenant-admin role alone does NOT
+enable history — an admin who wants history grants themself manage (audited,
+epoch-bumped). This keeps history orthogonal to role escalation and preserves
+the adversarial gate (read-grant holders, including admins without a manage
+grant, never observe non-current versions).
+
+History is METADATA ONLY: version entries carry `versionNo`/`status`/
+`publishedAt`/`hash` (no title, no content). Citations and the source stream
+never resolve non-current versions — they stay bound to CURRENT valid/released
+versions under the unchanged grant predicate. History surfaces:
+
+- `GET /documents/{id}/versions` — manage-grant holders see every version with
+  its status (valid/released/superseded/quarantined/expired/pending); everyone
+  else sees only the current valid/released version; null like a foreign/
+  nonexistent document otherwise.
+- `GET /documents/{id}/versions/{versionId}` — non-current versionIds resolve
+  only for manage-grant holders; everyone else observes the same 404 as
+  foreign/nonexistent versions. Current versions resolve for any grant holder.
+
+The manage_scope view also closes the S1 note in packages/core/src/grants.ts
+(a policy-level manage check on document_grants cannot be expressed without
+self-recursion): the manage-GRANT side is now reusable SQL; the manage gate's
+tenant-admin fallback remains application-layer (canManage).
+
+**ACL listing.** `GET /documents/{id}/grants` returns the slim entry shape
+`{grants: [{grantId, subjectType, subjectId, capability}]}` — no tenant/
+document id echo, no timestamps. Manage-gated exactly like grant writes
+(manage grant OR tenant admin); foreign/nonexistent/unmanageable documents are
+byte-identical 404s. Grant add/remove stay idempotent, audited
+`grant:changed`, epoch-bumped (S1 unchanged).
+
+**Citation hardening.** `GET /citations/{id}` responses carry a `resolvable`
+flag (always true on 200 — unresolvable citations are indistinguishable 404s),
+so clients can detect stale references from earlier answers. Authorization is
+re-checked per request inside a fresh security context (ADR-0009 epoch
+recheck), unchanged.
+
+**Authorized source seam.** `GET /documents/{id}/versions/{versionId}/source`
+is authorized per request with the byte-identical getVersion gate: source
+CONTENT is only disclosed for CURRENT valid/released versions of a granted
+document. S3 ships the minimal seam (version fingerprint response); S2's
+object-store stream replaces the handler while keeping this SQL gate.
+
 ## Consequences
 
 - Catalog tests enumerate every tenant table, policy, owner, role attribute, grant, view, function;

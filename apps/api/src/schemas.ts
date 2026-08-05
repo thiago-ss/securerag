@@ -251,9 +251,56 @@ export const grantRecordSchema = z.object({
 });
 export type GrantRecord = z.infer<typeof grantRecordSchema>;
 
-export const grantListSchema = z.object({ grants: z.array(grantRecordSchema) });
+/** S3 wire entry for GET /documents/{id}/grants: the slim ACL entry
+ * (grantId/subjectType/subjectId/capability) — no tenant/document echo, no
+ * timestamps (ADR-0003 amendment S3). */
+export const grantListEntrySchema = z.object({
+  grantId: z.string(),
+  subjectType: z.string(),
+  subjectId: z.string(),
+  capability: z.string(),
+});
+export type GrantListEntry = z.infer<typeof grantListEntrySchema>;
+
+export const grantListSchema = z.object({ grants: z.array(grantListEntrySchema) });
 
 export const grantCreateResponseSchema = z.object({ grant: grantRecordSchema });
+
+// ---------- S3 history / source / citation boundaries ----------
+
+/** Version metadata entry (S3, ADR-0003 amendment): versionNo/status/
+ * publishedAt/hash — NEVER content. publishedAt is ISO-8601 or null; hash is
+ * the hex-encoded content fingerprint. */
+export const versionMetadataSchema = z.object({
+  documentId: z.string(),
+  versionId: z.string(),
+  versionNo: z.number().int(),
+  status: z.string(),
+  isCurrent: z.boolean(),
+  publishedAt: z.string().nullable(),
+  hash: z.string(),
+});
+export type VersionMetadata = z.infer<typeof versionMetadataSchema>;
+
+export const versionListSchema = z.object({ versions: z.array(versionMetadataSchema) });
+
+/** Minimal authorized source seam (S3): the version fingerprint only; S2's
+ * object-store stream replaces the handler while keeping this shape. */
+export const sourceInfoSchema = z.object({
+  versionId: z.string(),
+  documentId: z.string(),
+  contentHash: z.string(),
+});
+export type SourceInfo = z.infer<typeof sourceInfoSchema>;
+
+/** Resolved-citation response (S3 hardening): the citation fields plus the
+ * `resolvable` flag — always true on 200 (unresolvable citations are
+ * indistinguishable 404s); clients can distinguish resolution-time validity
+ * from stale references carried in earlier answers. */
+export const resolvedCitationSchema = citationSchema.extend({
+  resolvable: z.literal(true),
+});
+export type ResolvedCitation = z.infer<typeof resolvedCitationSchema>;
 
 export const quarantineRecordSchema = z.object({
   versionId: z.string(),
