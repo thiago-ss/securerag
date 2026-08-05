@@ -55,6 +55,23 @@ that its USING expression references the security-context GUCs; any second polic
 fails CI. Revisit and restore `AS RESTRICTIVE` when the upstream fix ships
 (tracked in the risk register).
 
+## Amendment 2026-08-05 (S9) — command-disjoint policy sets
+
+S9 splits policies per command (FOR SELECT/INSERT/UPDATE/DELETE) on
+`retention_policies` and `audit_events` so that (a) insert-only audit and
+(b) expiry-proofed purge deletes can each carry their own WITH CHECK/USING
+without blocking the others (e.g. tombstones are INSERTs by the purge role;
+the audit expiry proof must gate DELETE only). Disjoint command policies
+cannot OR-weaken any single command; the catalog test asserts at most one
+policy per (table, command).
+
+Additional PostgreSQL 18.4 planner note: a FOR UPDATE policy whose USING is
+omitted (defaulting to the WITH CHECK expression) folds to constant false at
+plan time when the expression contains stable calls/subqueries — the same
+upstream folding defect as AS RESTRICTIVE. Explicit subquery-free USING
+expressions are therefore mandatory; WITH CHECK (execution-time) may carry
+subqueries (admin mirror, expiry proofs).
+
 ## Consequences
 
 - Catalog tests enumerate every tenant table, policy, owner, role attribute, grant, view, function;

@@ -125,11 +125,12 @@ export async function upsertRetentionPolicy(
     if (patch.graceDays !== undefined) push('grace_days', patch.graceDays);
     if (patch.legalHold !== undefined) push('legal_hold', patch.legalHold);
     if (sets.length === 0) return null;
-    sets.push('updated_at = now()');
 
+    // F9: no-op writes (idempotent client retries) neither bump the epoch nor
+    // write audit noise — the UPDATE targets only changed columns.
     const { rows } = await client.query<RetentionRow>(
       `UPDATE securerag.retention_policies
-          SET ${sets.join(', ')}
+          SET ${sets.join(', ')}, updated_at = now()
         WHERE tenant_id = securerag.ctx_tenant_id()
           AND securerag.ctx_principal_is_admin(securerag.ctx_tenant_id())
         RETURNING tenant_id, source_days, derived_days, audit_days, grace_days,
@@ -138,6 +139,15 @@ export async function upsertRetentionPolicy(
     );
     const row = rows[0];
     if (row === undefined) return null;
+    // A patch whose values equal the current row is a no-op: skip bump + audit.
+    const unchanged = sets.every((setExpr) => {
+      const column = setExpr.split(' = ')[0] ?? '';
+      const key = columnToPatchKey(column) as keyof RetentionPolicyPatch;
+      const desired = patch[key];
+      const current = row[key as keyof RetentionRow];
+      return desired !== undefined && current !== undefined && String(desired) === String(current);
+    });
+    if (unchanged) return toPolicy(row);
 
     const bumped = await client.query<{ epoch: string }>(
       'SELECT securerag.bump_authorization_epoch() AS epoch',
@@ -155,6 +165,17 @@ export async function upsertRetentionPolicy(
     });
     return toPolicy(row);
   });
+}
+
+function columnToPatchKey(column: string): string {
+  switch (column) {
+    case 'source_days': return 'sourceDays';
+    case 'derived_days': return 'derivedDays';
+    case 'audit_days': return 'auditDays';
+    case 'grace_days': return 'graceDays';
+    case 'legal_hold': return 'legalHold';
+    default: return '';
+  }
 }
 
 export interface ExpireResult {

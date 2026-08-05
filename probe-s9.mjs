@@ -1,0 +1,14 @@
+import { randomUUID } from 'node:crypto';
+import { getTestDb, resetData, seedFixtures } from './packages/db/src/testkit.ts';
+const db = await getTestDb();
+await resetData(db.superuserPool);
+const w = await seedFixtures(db.superuserPool);
+const c = await db.apiPool.connect();
+await c.query('BEGIN');
+await c.query("SELECT set_config('securerag.tenant_id', $1, true)", [w.tenantA.id]);
+await c.query("SELECT set_config('securerag.principal_id', $1, true)", [w.carol.id]);
+const r = await c.query('SELECT securerag.ctx_principal_is_admin(securerag.ctx_tenant_id()) AS is_admin, securerag.ctx_tenant_id() AS t');
+console.log('admin check:', JSON.stringify(r.rows));
+await c.query('ROLLBACK');
+await db.stop();
+console.log('done');

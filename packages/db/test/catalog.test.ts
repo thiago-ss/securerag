@@ -88,18 +88,33 @@ describe('schema catalog contract', () => {
     expect(migration.rolbypassrls, 'migration must not bypass RLS').toBe(false);
   });
 
-  it('keeps exactly one policy per RLS table, guarded by the security-context GUCs', async () => {
+  it('keeps at most one policy per command per RLS table, guarded by the security-context GUCs', async () => {
     for (const name of [...TENANT_TABLES, ...GLOBAL_RLS_TABLES]) {
       const policies = await policiesFor(pool, name);
-      expect(policies.length, `${name} must have exactly one policy (permissive OR weakening)`).toBe(1);
-      const p = policies[0]!;
-      expect(p.using_expr, `${name}:${p.polname} missing USING`).toBeTruthy();
-      expect(p.with_check_expr, `${name}:${p.polname} missing WITH CHECK`).toBeTruthy();
+      expect(policies.length, `${name} has no policies`).toBeGreaterThan(0);
+      // Command-disjoint policy sets (S9: retention_policies/audit_events split
+      // FOR SELECT/INSERT/UPDATE/DELETE) cannot OR-weaken any single command;
+      // FOR ALL policies must stay alone. Assert at most one policy per command.
+      const byCommand = new Map<string, number>();
+      for (const p of policies) {
+        byCommand.set(p.polcmd, (byCommand.get(p.polcmd) ?? 0) + 1);
+      }
+      for (const [cmd, count] of byCommand) {
+        expect(count, `${name} has ${count} policies for ${cmd} (permissive OR weakening)`).toBe(1);
+      }
       const guard = /current_setting\('securerag\.(tenant_id|principal_id)'|securerag\.ctx_/;
-      expect(p.using_expr ?? '', `${name}:${p.polname} USING must reference context GUCs`)
-        .toMatch(guard);
-      expect(p.with_check_expr ?? '', `${name}:${p.polname} WITH CHECK must reference context GUCs`)
-        .toMatch(guard);
+      const permissive = policies.filter((p) => p.polpermissive);
+      expect(permissive.length, `${name} has no applicable policy`).toBeGreaterThan(0);
+      for (const p of policies) {
+        // 'false' is a legitimate deny-all sentinel (e.g. FOR DELETE none);
+        // every other expression must be anchored on the security context.
+        if (p.using_expr !== null && p.using_expr !== 'false') {
+          expect(p.using_expr, `${name}:${p.polname} USING must reference context GUCs`).toMatch(guard);
+        }
+        if (p.with_check_expr !== null && p.with_check_expr !== 'false') {
+          expect(p.with_check_expr, `${name}:${p.polname} WITH CHECK must reference context GUCs`).toMatch(guard);
+        }
+      }
     }
     const memberships = await policiesFor(pool, 'tenant_memberships');
     expect(memberships[0]?.polname).toBe('memberships_access');

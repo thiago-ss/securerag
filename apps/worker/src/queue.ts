@@ -27,15 +27,22 @@ export interface ClaimOptions {
 }
 
 const BACKOFF_BASE_MS = 30_000;
+/** Claim lease: a claimed-but-crashed job is reclaimable after this. */
+export const CLAIM_LEASE_MS = 5 * 60_000;
 
 /**
- * Claim up to `limit` pending jobs of the given types with SKIP LOCKED.
- * Returns the claimed rows with attempts incremented and a lease on
- * next_attempt_at. Idempotent callers: the same job can never be claimed by
- * two consumers (row lock + status transition are atomic).
+ * Claim up to `limit` claimable jobs of the given types with SKIP LOCKED:
+ * PENDING jobs past their next_attempt_at AND RUNNING jobs whose lease has
+ * expired (a crashed consumer leaves status='running' with an old
+ * next_attempt_at; the lease-expired reclaim is what makes crash recovery
+ * work — F2). The clock is read FROM THE DATABASE so container/host skew
+ * cannot hide fresh jobs (F6). Returns the claimed rows with attempts
+ * incremented and next_attempt_at advanced by the claim lease.
  */
 export async function claimJobs(pool: Pool, opts: ClaimOptions): Promise<JobRow[]> {
-  const now = opts.now?.() ?? new Date();
+  const { rows: nowRows } = await pool.query<{ now: Date }>('SELECT now() AS now');
+  const dbNow = nowRows[0]?.now ?? new Date();
+  const leaseExpiry = new Date(dbNow.getTime() + CLAIM_LEASE_MS);
   const { rows } = await pool.query<JobRow>(
     `UPDATE securerag.jobs j
         SET status = 'running',
@@ -44,16 +51,18 @@ export async function claimJobs(pool: Pool, opts: ClaimOptions): Promise<JobRow[
       WHERE j.job_id IN (
         SELECT j2.job_id
           FROM securerag.jobs j2
-         WHERE j2.status = 'pending'
-           AND j2.next_attempt_at <= $2::timestamptz
-           AND j2.job_type = ANY($3::text[])
+         WHERE j2.job_type = ANY($3::text[])
+           AND (
+             (j2.status = 'pending' AND j2.next_attempt_at <= $2::timestamptz)
+             OR (j2.status = 'running' AND j2.next_attempt_at <= $2::timestamptz)
+           )
          ORDER BY j2.job_id
          FOR UPDATE SKIP LOCKED
          LIMIT $1
       )
       RETURNING tenant_id, job_id, job_type, idempotency_key, status,
                 attempts, max_attempts, payload_key`,
-    [opts.limit, now, [...opts.jobTypes]],
+    [opts.limit, leaseExpiry, [...opts.jobTypes]],
   );
   return rows;
 }
@@ -96,7 +105,9 @@ export async function failJob(
     );
     return;
   }
-  const backoffMs = BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1);
+  // Deterministic jitter (F7) so correlated retries do not thundering-herd.
+  const jitterMs = (job.job_id.charCodeAt(0) * 137 + attempts * 7919) % 5000;
+  const backoffMs = BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1) + jitterMs;
   const next = new Date(Date.now() + backoffMs);
   await client.query(
     `UPDATE securerag.jobs

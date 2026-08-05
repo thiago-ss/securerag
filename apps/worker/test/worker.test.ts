@@ -83,25 +83,56 @@ describe('S9 worker: queue claim loop and purge jobs on real runtime roles', () 
 
   it('a failing handler backoffs retryably and permanently fails at max_attempts', async () => {
     // An unknown job type has no handler: pickHandler throws inside the
-    // transaction -> the failure path (backoff, then permanent at max_attempts).
+    // transaction -> the failure path. Drive to max_attempts (5) to prove the
+    // terminal transition, not just the first backoff.
     const { rows: inserted } = await db.superuserPool.query<{ job_id: string }>(
-      `INSERT INTO securerag.jobs (tenant_id, idempotency_key, job_type)
-       VALUES ($1, $2, 'bogus-type') RETURNING job_id`,
+      `INSERT INTO securerag.jobs (tenant_id, idempotency_key, job_type, max_attempts)
+       VALUES ($1, $2, 'bogus-type', 3) RETURNING job_id`,
       [world.tenantA.id, `bogus-${Date.now()}`],
     );
     const jobId = inserted[0]!.job_id;
-    const result = await runWorkerOnce({
+    const deps = {
       workerPool: db.workerPool,
       purgePool: db.purgePool,
       store: new InMemorySourceObjectStore(),
       jobTypes: ['purge', 'bogus-type'],
-    }, { limit: 10 });
-    void result;
+    };
+    for (let i = 0; i < 5; i += 1) {
+      await runWorkerOnce(deps, { limit: 10 });
+      const { rows } = await db.superuserPool.query<{ status: string; attempts: number }>(
+        `SELECT status, attempts FROM securerag.jobs WHERE job_id = $1`,
+        [jobId],
+      );
+      if (rows[0]?.status === 'permanent_failed') break;
+      // Backoff puts the next attempt in the future; reset so the loop can
+      // drive it (the backoff itself is covered by the queue unit semantics).
+      await db.superuserPool.query(
+        `UPDATE securerag.jobs SET next_attempt_at = now() WHERE job_id = $1`,
+        [jobId],
+      );
+    }
     const { rows } = await db.superuserPool.query<{ status: string; attempts: number }>(
       `SELECT status, attempts FROM securerag.jobs WHERE job_id = $1`,
       [jobId],
     );
-    expect(rows[0]?.attempts).toBeGreaterThanOrEqual(1);
-    expect(['pending', 'permanent_failed']).toContain(rows[0]?.status);
+    expect(rows[0]?.attempts).toBe(3);
+    expect(rows[0]?.status).toBe('permanent_failed');
+  });
+
+  it('a crashed running job is reclaimed after its lease expires', async () => {
+    const { rows: inserted } = await db.superuserPool.query<{ job_id: string }>(
+      `INSERT INTO securerag.jobs (tenant_id, idempotency_key, job_type, status, next_attempt_at)
+       VALUES ($1, $2, 'purge', 'running', now() - interval '10 minutes') RETURNING job_id`,
+      [world.tenantA.id, `crashed-${Date.now()}`],
+    );
+    const jobId = inserted[0]!.job_id;
+    const claimed = await claimJobs(db.workerPool, { jobTypes: ['purge'], limit: 10 });
+    expect(claimed.some((j) => j.job_id === jobId)).toBe(true);
+    const { rows } = await db.superuserPool.query<{ status: string }>(
+      `SELECT status FROM securerag.jobs WHERE job_id = $1`,
+      [jobId],
+    );
+    expect(rows[0]?.status).toBe('running');
+    await db.superuserPool.query(`UPDATE securerag.jobs SET status = 'pending', next_attempt_at = now() WHERE job_id = $1`, [jobId]);
   });
 });

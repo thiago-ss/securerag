@@ -88,37 +88,37 @@ const SELECT_SOURCE_KEYS = `
    ORDER BY v.source_object_key`;
 
 async function countEligible(client: PoolClient): Promise<Eligibility> {
-  const [sources, chunks, versions, audit] = await Promise.all([
-    client.query<{ source_object_key: string }>(SELECT_SOURCE_KEYS),
-    client.query<{ n: number }>(
-      `SELECT count(*)::int AS n
-         FROM securerag.chunks c
-         JOIN securerag.document_versions v
-           ON v.tenant_id = c.tenant_id AND v.version_id = c.version_id
-         JOIN securerag.retention_policies p ON p.tenant_id = c.tenant_id
-        WHERE c.tenant_id = securerag.ctx_tenant_id()
-          AND v.status = 'expired'
-          AND v.published_at + p.derived_days * interval '1 day'
-                        + p.grace_days * interval '1 day' < now()`,
-    ),
-    client.query<{ n: number }>(
-      `SELECT count(*)::int AS n
-         FROM securerag.document_versions v
-         JOIN securerag.retention_policies p ON p.tenant_id = v.tenant_id
-        WHERE v.tenant_id = securerag.ctx_tenant_id()
-          AND v.status = 'expired'
-          AND v.published_at + GREATEST(p.source_days, p.derived_days) * interval '1 day'
-                        + p.grace_days * interval '1 day' < now()`,
-    ),
-    client.query<{ n: number }>(
-      `SELECT count(*)::int AS n
-         FROM securerag.audit_events a
-         JOIN securerag.retention_policies p ON p.tenant_id = a.tenant_id
-        WHERE a.tenant_id = securerag.ctx_tenant_id()
-          AND a.occurred_at + p.audit_days * interval '1 day'
-                        + p.grace_days * interval '1 day' < now()`,
-    ),
-  ]);
+  // Serialized on one client (pg queues concurrent queries with a deprecation
+  // warning; F8).
+  const sources = await client.query<{ source_object_key: string }>(SELECT_SOURCE_KEYS);
+  const chunks = await client.query<{ n: number }>(
+    `SELECT count(*)::int AS n
+       FROM securerag.chunks c
+       JOIN securerag.document_versions v
+         ON v.tenant_id = c.tenant_id AND v.version_id = c.version_id
+       JOIN securerag.retention_policies p ON p.tenant_id = c.tenant_id
+      WHERE c.tenant_id = securerag.ctx_tenant_id()
+        AND v.status = 'expired'
+        AND v.published_at + p.derived_days * interval '1 day'
+                      + p.grace_days * interval '1 day' < now()`,
+  );
+  const versions = await client.query<{ n: number }>(
+    `SELECT count(*)::int AS n
+       FROM securerag.document_versions v
+       JOIN securerag.retention_policies p ON p.tenant_id = v.tenant_id
+      WHERE v.tenant_id = securerag.ctx_tenant_id()
+        AND v.status = 'expired'
+        AND v.published_at + GREATEST(p.source_days, p.derived_days) * interval '1 day'
+                      + p.grace_days * interval '1 day' < now()`,
+  );
+  const audit = await client.query<{ n: number }>(
+    `SELECT count(*)::int AS n
+       FROM securerag.audit_events a
+       JOIN securerag.retention_policies p ON p.tenant_id = a.tenant_id
+      WHERE a.tenant_id = securerag.ctx_tenant_id()
+        AND a.occurred_at + p.audit_days * interval '1 day'
+                      + p.grace_days * interval '1 day' < now()`,
+  );
   return {
     sourceKeys: sources.rows.map((r) => r.source_object_key),
     chunks: chunks.rows[0]?.n ?? 0,
@@ -187,62 +187,103 @@ export async function runTenantPurge(
     };
   }
 
-  const deleted = await withWorkerContext(deps.purgePool, params, async (client) => {
-    const sourceRows = await client.query<{ source_object_key: string }>(SELECT_SOURCE_KEYS);
-    const sources = await deps.store.deleteSources(sourceRows.rows.map((r) => r.source_object_key));
-
-    const chunkRows = await client.query<{ chunk_id: string }>(
-      `DELETE FROM securerag.chunks c
-         USING securerag.document_versions v,
-               securerag.retention_policies p
-        WHERE c.tenant_id = securerag.ctx_tenant_id()
-          AND v.tenant_id = c.tenant_id AND v.version_id = c.version_id
-          AND p.tenant_id = c.tenant_id
-          AND v.status = 'expired'
-          AND v.published_at + p.derived_days * interval '1 day'
-                        + p.grace_days * interval '1 day' < now()
-        RETURNING c.chunk_id`,
+  const deleted = await withWorkerContext(deps.purgePool, params, async (client, ctx) => {
+    const holdActive = await client.query<{ legal_hold: boolean }>(
+      `SELECT legal_hold FROM securerag.retention_policies
+        WHERE tenant_id = securerag.ctx_tenant_id()`,
     );
+    const blockedByHold = holdActive.rows[0]?.legal_hold === true;
 
-    const versionRows = await client.query<{ version_id: string }>(
-      `DELETE FROM securerag.document_versions v
-         USING securerag.retention_policies p
-        WHERE v.tenant_id = securerag.ctx_tenant_id()
-          AND p.tenant_id = v.tenant_id
-          AND v.status = 'expired'
-          AND v.published_at + GREATEST(p.source_days, p.derived_days) * interval '1 day'
-                        + p.grace_days * interval '1 day' < now()
-        RETURNING v.version_id`,
-    );
+    let sources = 0;
+    if (!blockedByHold) {
+      const sourceRows = await client.query<{ source_object_key: string }>(
+        `SELECT v.source_object_key
+           FROM securerag.document_versions v
+           JOIN securerag.retention_policies p ON p.tenant_id = v.tenant_id
+          WHERE v.tenant_id = securerag.ctx_tenant_id()
+            AND v.status = 'expired'
+            AND v.published_at + p.source_days * interval '1 day'
+                          + p.grace_days * interval '1 day' < now()
+            AND NOT EXISTS (
+              SELECT 1 FROM securerag.retention_policies hp
+               WHERE hp.tenant_id = v.tenant_id AND hp.legal_hold)
+          ORDER BY v.source_object_key`,
+      );
+      sources = await deps.store.deleteSources(sourceRows.rows.map((r) => r.source_object_key));
+    }
 
-    const auditRows = await client.query<DeletedAuditRow>(
-      `DELETE FROM securerag.audit_events a
-         USING securerag.retention_policies p
-        WHERE a.tenant_id = securerag.ctx_tenant_id()
-          AND p.tenant_id = a.tenant_id
-          AND a.occurred_at + p.audit_days * interval '1 day'
-                        + p.grace_days * interval '1 day' < now()
-        RETURNING a.event_id`,
-    );
+    const chunkRows = blockedByHold
+      ? { rows: [] as { chunk_id: string }[] }
+      : await client.query<{ chunk_id: string }>(
+          `DELETE FROM securerag.chunks c
+             USING securerag.document_versions v,
+                   securerag.retention_policies p
+            WHERE c.tenant_id = securerag.ctx_tenant_id()
+              AND v.tenant_id = c.tenant_id AND v.version_id = c.version_id
+              AND p.tenant_id = c.tenant_id
+              AND v.status = 'expired'
+              AND v.published_at + p.derived_days * interval '1 day'
+                            + p.grace_days * interval '1 day' < now()
+              AND NOT EXISTS (
+                SELECT 1 FROM securerag.retention_policies hp
+                 WHERE hp.tenant_id = c.tenant_id AND hp.legal_hold)
+            RETURNING c.chunk_id`,
+        );
 
-    return {
+    const versionRows = blockedByHold
+      ? { rows: [] as { version_id: string }[] }
+      : await client.query<{ version_id: string }>(
+          `DELETE FROM securerag.document_versions v
+             USING securerag.retention_policies p
+            WHERE v.tenant_id = securerag.ctx_tenant_id()
+              AND p.tenant_id = v.tenant_id
+              AND v.status = 'expired'
+              AND v.published_at + GREATEST(p.source_days, p.derived_days) * interval '1 day'
+                            + p.grace_days * interval '1 day' < now()
+              AND NOT EXISTS (
+                SELECT 1 FROM securerag.retention_policies hp
+                 WHERE hp.tenant_id = v.tenant_id AND hp.legal_hold)
+            RETURNING v.version_id`,
+        );
+
+    // Audit deletes re-prove expiry AND not-held via the role-aware RLS policy.
+    const auditRows = blockedByHold
+      ? { rows: [] as DeletedAuditRow[] }
+      : await client.query<DeletedAuditRow>(
+          `DELETE FROM securerag.audit_events a
+             USING securerag.retention_policies p
+            WHERE a.tenant_id = securerag.ctx_tenant_id()
+              AND p.tenant_id = a.tenant_id
+              AND a.occurred_at + p.audit_days * interval '1 day'
+                            + p.grace_days * interval '1 day' < now()
+            RETURNING a.event_id`,
+        );
+
+    // F4: tombstones + completion are written in the SAME transaction as the
+    // deletes (the purge role now holds INSERT on audit_events) — no crash
+    // window leaves deleted audit rows unaccounted.
+    const counts: PurgeCounts = {
       sources,
       chunks: chunkRows.rows.length,
       versions: versionRows.rows.length,
-      audit: auditRows.rows.map((r) => r.event_id),
+      audit: auditRows.rows.length,
     };
-  });
-
-  const counts: PurgeCounts = {
-    sources: deleted.sources,
-    chunks: deleted.chunks,
-    versions: deleted.versions,
-    audit: deleted.audit.length,
-  };
-
-  const epoch = await withWorkerContext(deps.workerPool, params, async (client, ctx) => {
+    if (blockedByHold) {
+      await appendAudit({
+        client,
+        event: {
+          eventType: 'purge:blocked',
+          requestId: params.requestId,
+          principalId: RETENTION_SERVICE_PRINCIPAL,
+          membershipId: RETENTION_SERVICE_MEMBERSHIP,
+          authEpoch: ctx.authEpoch,
+          filters: { ...counts, epoch: ctx.authEpoch },
+        },
+      });
+      return { counts, blocked: true, epoch: ctx.authEpoch };
+    }
     if (counts.audit > 0) {
-      const ids = deleted.audit.map((r) => BigInt(r));
+      const ids = auditRows.rows.map((r) => BigInt(r.event_id));
       const min = ids.reduce((a, b) => (b < a ? b : a));
       const max = ids.reduce((a, b) => (b > a ? b : a));
       await appendAudit({
@@ -253,10 +294,7 @@ export async function runTenantPurge(
           principalId: RETENTION_SERVICE_PRINCIPAL,
           membershipId: RETENTION_SERVICE_MEMBERSHIP,
           authEpoch: ctx.authEpoch,
-          filters: {
-            eventIdRange: { min: min.toString(), max: max.toString() },
-            count: counts.audit,
-          },
+          filters: { eventIdRange: { min: min.toString(), max: max.toString() }, count: counts.audit },
         },
       });
     }
@@ -273,8 +311,8 @@ export async function runTenantPurge(
         },
       });
     }
-    return ctx.authEpoch;
+    return { counts, blocked: false, epoch: ctx.authEpoch };
   });
 
-  return { tenantId: params.tenantId, blocked: false, counts, epoch };
+  return { tenantId: params.tenantId, blocked: deleted.blocked, counts: deleted.counts, epoch: deleted.epoch };
 }

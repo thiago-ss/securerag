@@ -57,17 +57,36 @@ CREATE POLICY tenant_isolation ON securerag.jobs AS PERMISSIVE
 -- Claim index for the SKIP LOCKED loop (r8 §4): pending + lease-expired first.
 CREATE INDEX jobs_claim_idx ON securerag.jobs (status, next_attempt_at);
 
--- ---------- RLS: retention policies (purge scheduling) ----------
+-- ---------- RLS: retention policies (purge scheduling + admin writes) ----------
 -- The worker enumerates tenants to schedule purge jobs from the policy table
--- (tenant ids + retention settings only, no content). Other roles keep the
--- strict tenant_isolation branch.
+-- (tenant ids + retention settings only, no content). WRITES are gated:
+--   INSERT is allowed only as first-access seeding (no row for the tenant yet,
+--     proven via a FOR-SELECT-scoped subquery — disjoint command policies, so
+--     no permissive OR-weakening for any single command; ADR-0003 amendment);
+--   UPDATE is tenant-admin-only (admin mirror, no recursion);
+--   DELETE is impossible for every runtime role (FOR DELETE WITH CHECK false;
+--     api also has no DELETE grant).
 DROP POLICY tenant_isolation ON securerag.retention_policies;
-CREATE POLICY tenant_isolation ON securerag.retention_policies AS PERMISSIVE
-  FOR ALL
+CREATE POLICY retention_select ON securerag.retention_policies AS PERMISSIVE
+  FOR SELECT
   USING (tenant_id = securerag.ctx_tenant_id()
-         OR current_user = 'securerag_worker')
+         OR current_user = 'securerag_worker');
+CREATE POLICY retention_insert_seed ON securerag.retention_policies AS PERMISSIVE
+  FOR INSERT
+  WITH CHECK (tenant_id = securerag.ctx_tenant_id());
+-- Explicit USING without subqueries: PostgreSQL 18.4 folds plan-time security
+-- quals containing subqueries/stable calls to false (the same upstream defect
+-- as the AS RESTRICTIVE folding, ADR-0003); WITH CHECK evaluates at execution
+-- time and is safe. The admin gate therefore lives in BOTH the app WHERE
+-- (zero-rows for non-admins) and the WITH CHECK (hard rejection).
+CREATE POLICY retention_update_admin ON securerag.retention_policies AS PERMISSIVE
+  FOR UPDATE
+  USING (tenant_id = securerag.ctx_tenant_id())
   WITH CHECK (tenant_id = securerag.ctx_tenant_id()
-              OR current_user = 'securerag_worker');
+              AND securerag.ctx_principal_is_admin(securerag.ctx_tenant_id()));
+CREATE POLICY retention_delete_none ON securerag.retention_policies AS PERMISSIVE
+  FOR DELETE
+  USING (false);
 
 -- ---------- RLS: expiry proof for the purge role ----------
 -- The purge role sees ONLY expired versions of the tenant and ONLY chunks of
@@ -102,29 +121,32 @@ CREATE POLICY tenant_isolation ON securerag.chunks AS PERMISSIVE
 -- tenant's audit_days AND not under legal hold (both re-proven in the purge
 -- WHERE clause; the policy is the SQL-level proof). All other roles keep the
 -- insert-only/read-only branch (no UPDATE/DELETE grants anywhere, 0003).
+-- Command-disjoint policies (no permissive OR-weakening for any single
+-- command; ADR-0003 amendment): SELECT/INSERT stay tenant-scoped and
+-- insert-only-by-grant; the expiry proof applies ONLY to DELETE by the
+-- purge/audit-retention roles, so tombstones (INSERT by the purge role,
+-- F4) are not blocked by the expiry predicate.
 DROP POLICY tenant_isolation ON securerag.audit_events;
-CREATE POLICY tenant_isolation ON securerag.audit_events AS PERMISSIVE
-  FOR ALL
+CREATE POLICY audit_select ON securerag.audit_events AS PERMISSIVE
+  FOR SELECT
+  USING (tenant_id = securerag.ctx_tenant_id());
+CREATE POLICY audit_insert ON securerag.audit_events AS PERMISSIVE
+  FOR INSERT
+  WITH CHECK (tenant_id = securerag.ctx_tenant_id());
+CREATE POLICY audit_update_none ON securerag.audit_events AS PERMISSIVE
+  FOR UPDATE
+  WITH CHECK (false);
+CREATE POLICY audit_delete_expiry ON securerag.audit_events AS PERMISSIVE
+  FOR DELETE
   USING (tenant_id = securerag.ctx_tenant_id()
-         AND (current_user NOT IN ('securerag_purge', 'securerag_audit_retention')
-              OR (
-                occurred_at + COALESCE(
-                  (SELECT audit_days FROM securerag.retention_policies rp
-                    WHERE rp.tenant_id = securerag.audit_events.tenant_id), 1095
-                ) * interval '1 day' < now()
-                AND NOT COALESCE(
-                  (SELECT legal_hold FROM securerag.retention_policies rp
-                    WHERE rp.tenant_id = securerag.audit_events.tenant_id), false))))
-  WITH CHECK (tenant_id = securerag.ctx_tenant_id()
-              AND (current_user NOT IN ('securerag_purge', 'securerag_audit_retention')
-                   OR (
-                     occurred_at + COALESCE(
-                       (SELECT audit_days FROM securerag.retention_policies rp
-                         WHERE rp.tenant_id = securerag.audit_events.tenant_id), 1095
-                     ) * interval '1 day' < now()
-                     AND NOT COALESCE(
-                       (SELECT legal_hold FROM securerag.retention_policies rp
-                         WHERE rp.tenant_id = securerag.audit_events.tenant_id), false))));
+         AND current_user IN ('securerag_purge', 'securerag_audit_retention')
+         AND occurred_at + COALESCE(
+               (SELECT audit_days FROM securerag.retention_policies rp
+                 WHERE rp.tenant_id = securerag.audit_events.tenant_id), 1095
+             ) * interval '1 day' < now()
+         AND NOT COALESCE(
+               (SELECT legal_hold FROM securerag.retention_policies rp
+                 WHERE rp.tenant_id = securerag.audit_events.tenant_id), false));
 
 -- Audit purge scan index (occurred_at ordering of the expiry predicate).
 CREATE INDEX audit_events_occurred_idx ON securerag.audit_events (occurred_at);
@@ -151,6 +173,12 @@ GRANT DELETE ON
 -- with invoker privileges).
 GRANT SELECT ON securerag.retention_policies TO securerag_audit_retention;
 GRANT DELETE ON securerag.audit_events TO securerag_audit_retention;
+
+-- S9 review fixes: no runtime role may DELETE the policy row (F3); the purge
+-- role may append audit events so tombstones + completion are written in the
+-- SAME transaction as the destructive deletes (F4 — no crash window).
+REVOKE DELETE ON securerag.retention_policies FROM securerag_api, securerag_worker;
+GRANT INSERT ON securerag.audit_events TO securerag_purge;
 
 -- Service roles read the authorization epoch inside withWorkerContext (they
 -- never bump it: bump EXECUTE stays api/worker-only).

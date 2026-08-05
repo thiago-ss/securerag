@@ -175,6 +175,32 @@ describe('S9 retention and purge on real runtime roles', () => {
     expect(events.rows.map((r) => r.event_type)).toContain('purge:completed');
   });
 
+  it('purge deletes expired audit rows with tombstones (policy subquery not folded)', async () => {
+    await db.superuserPool.query(
+      `INSERT INTO securerag.audit_events
+         (tenant_id, event_type, request_id, auth_epoch, occurred_at)
+       VALUES ($1, 'retrieval:allowed', gen_random_uuid(), 1, now() - interval '2000 days')`,
+      [world.tenantA.id],
+    );
+    await db.superuserPool.query(
+      `UPDATE securerag.retention_policies SET audit_days = 30, legal_hold = false WHERE tenant_id = $1`,
+      [world.tenantA.id],
+    );
+    const store = new InMemorySourceObjectStore();
+    const result = await runTenantPurge(
+      { workerPool: db.workerPool, purgePool: db.purgePool, store },
+      { tenantId: world.tenantA.id, requestId: req() },
+    );
+    expect(result.counts.audit).toBeGreaterThan(0);
+    const { rows } = await db.superuserPool.query<{ event_type: string }>(
+      `SELECT event_type FROM securerag.audit_events
+        WHERE event_type IN ('audit:purged','purge:completed')`,
+    );
+    expect(rows.map((r) => r.event_type)).toEqual(
+      expect.arrayContaining(['audit:purged', 'purge:completed']),
+    );
+  });
+
   it('the purge role cannot delete ACTIVE rows even with a raw DELETE', async () => {
     const client = await db.purgePool.connect();
     try {

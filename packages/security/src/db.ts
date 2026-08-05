@@ -1,7 +1,7 @@
 import pg from 'pg';
 import type { PoolConfig } from 'pg';
 
-export type RuntimeRole = 'securerag_api' | 'securerag_worker';
+export type RuntimeRole = 'securerag_api' | 'securerag_worker' | 'securerag_purge' | 'securerag_audit_retention';
 
 /**
  * Create a least-privilege runtime connection pool for the given role.
