@@ -1,6 +1,10 @@
 import type { Pool, PoolClient } from 'pg';
 import { MembershipError, withIdentityContext, withSecurityContext } from '@securerag/security';
-import type { AnswerGenerator } from '@securerag/providers';
+import {
+  HEURISTIC_INJECTION_DETECTOR,
+  type AnswerGenerator,
+  type InjectionDetector,
+} from '@securerag/providers';
 import { appendAudit, sha256 } from './audit.js';
 import { DETERMINISTIC_EMBEDDING, toVectorLiteral, type EmbeddingProvider } from './embeddings.js';
 import { grantPredicateSql } from './grants.js';
@@ -30,6 +34,16 @@ export interface RetrievalDeps {
   clock?: () => number;
   /** SQL LIMIT; defaults to RETRIEVAL_DEFAULT_LIMIT. */
   limit?: number;
+  /**
+   * Query-time injection detector (ADR-0006 layer 7 — defense-in-depth ONLY,
+   * a signal, never a gate). Defaults to the deterministic heuristic adapter
+   * (CI/demo). A detector miss, an outage, or a detector that always says
+   * 'none' changes NOTHING about authorization (proven by
+   * core/test/detection-off.test.ts). A 'high' result only appends an
+   * 'injection:detected' audit event (redacted query hash, never the text)
+   * and processing continues unmodified.
+   */
+  injectionDetector?: InjectionDetector;
 }
 
 export const RETRIEVAL_DEFAULT_LIMIT = 10;
@@ -324,6 +338,41 @@ function toEvidenceChunk(row: RetrievalRow): EvidenceChunk {
 }
 
 /**
+ * Query-time detection, layer 7 of the ADR-0006 stack: run the detector on
+ * the QUESTION inside the verified security context and, on any high-risk
+ * signal, append 'injection:detected' with the REDACTED query hash only
+ * (never the query text; reasons are fixed pattern ids). Detection NEVER
+ * blocks or alters processing — not even a throwing detector: an outage must
+ * not weaken authorization (threat-model.md: "A detector miss must not
+ * weaken tenant/ACL enforcement"). Returns nothing; the caller continues.
+ */
+async function detectAndAudit(
+  client: PoolClient,
+  ctx: import('@securerag/security').SecurityContext,
+  detector: InjectionDetector,
+  params: RetrievalParams,
+): Promise<void> {
+  try {
+    const scan = await detector.scan(params.question);
+    if (scan.risk !== 'high') return;
+    await appendAudit({
+      client,
+      event: {
+        eventType: 'injection:detected',
+        requestId: params.requestId,
+        principalId: ctx.principalId,
+        membershipId: ctx.membershipId,
+        authEpoch: ctx.authEpoch,
+        queryHash: sha256(params.question),
+        filters: { risk: 'high', reasons: scan.reasons },
+      },
+    });
+  } catch {
+    // detector outage: defense-in-depth layer is silent, authorization unchanged
+  }
+}
+
+/**
  * End-to-end retrieval run (T3 contract §Domain contracts, S6 hybrid upgrade):
  *  1. withIdentityContext — the ONLY identity-context use: list the
  *     principal's active memberships; the requested tenant is an untrusted
@@ -332,9 +381,11 @@ function toEvidenceChunk(row: RetrievalRow): EvidenceChunk {
  *  3. withSecurityContext — verified tenant/principal/membership/request/epoch
  *     context; hybrid (default) | keyword | vector SQL; evidence bundle
  *     (RLS-filtered rows; authorization never happens after SQL).
- *  4. decide(bundle, question) — below the calibrated threshold (or empty)
+ *  4. Layer-7 detection signal: high-risk question -> 'injection:detected'
+ *     audit event (query hash only); processing NEVER changes.
+ *  5. decide(bundle, question) — below the calibrated threshold (or empty)
  *     yields refused INSUFFICIENT_EVIDENCE, audited, no generation.
- *  5. Otherwise the provider spy generates a deterministic answer that cites
+ *  6. Otherwise the provider spy generates a deterministic answer that cites
  *     only provided citations; audited as retrieval:allowed.
  * The audit event is written inside the protected transaction. Never answers
  * from memory; never exposes rows to application-side re-filtering.
@@ -348,6 +399,7 @@ export async function runRetrieval(
   const limit = deps.limit ?? RETRIEVAL_DEFAULT_LIMIT;
   const mode = params.mode ?? 'hybrid';
   const embeddings = deps.embeddings ?? DETERMINISTIC_EMBEDDING;
+  const injectionDetector = deps.injectionDetector ?? HEURISTIC_INJECTION_DETECTOR;
 
   const identity = await withIdentityContext(deps.pool, params.principalId, async () => undefined);
   if (!identity.memberships.some((m) => m.tenantId === params.tenantId)) {
@@ -366,6 +418,8 @@ export async function runRetrieval(
       : { question: params.question, embedding: queryEmbedding, limit };
 
   return withSecurityContext(deps.pool, params, async (client, ctx) => {
+    await detectAndAudit(client, ctx, injectionDetector, params);
+
     const bundle = await executeRetrievalQuery(
       client,
       mode,

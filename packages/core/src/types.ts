@@ -44,7 +44,8 @@ export interface SecurityParams {
   requestId: string;
 }
 
-/** T3 audit subset (contract §Audit events) extended by S1 admin events. */
+/** T3 audit subset (contract §Audit events) extended by S1 admin events and
+ * S5 injection events. */
 export type AuditEventType =
   | 'retrieval:allowed'
   | 'retrieval:denied'
@@ -53,7 +54,10 @@ export type AuditEventType =
   | 'citation:resolved'
   | 'membership:changed'
   | 'group:changed'
-  | 'grant:changed';
+  | 'grant:changed'
+  | 'version:quarantined'
+  | 'version:review'
+  | 'injection:detected';
 
 /**
  * Audit event payload. tenant_id and occurred_at come from the database; never
