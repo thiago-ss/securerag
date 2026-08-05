@@ -6,6 +6,30 @@ export {
   type ListAuditParams,
 } from './audit.js';
 export {
+  canonicalChainInput,
+  canonicalize,
+  computeEventHashHex,
+  rowToChainRow,
+  sha256Hex,
+  verifyAuditChain,
+  verifyChainRows,
+  type ChainFields,
+  type ChainRow,
+  type ChainRowSql,
+  type ChainVerification,
+} from './audit-chain.js';
+export {
+  AUDIT_EXPORT_FORMAT,
+  auditExportBody,
+  exportAudit,
+  exportBodySha256,
+  exportLineToChainFields,
+  toExportLine,
+  type AuditExport,
+  type AuditExportLine,
+  type ExportAuditParams,
+} from './audit-export.js';
+export {
   getAuthorizedSource,
   getDocument,
   getVersion,

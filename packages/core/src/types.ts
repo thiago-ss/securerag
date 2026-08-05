@@ -63,6 +63,7 @@ export type AuditEventType =
   | 'purge:completed'
   | 'purge:blocked'
   | 'audit:purged'
+  | 'audit:exported'
   | 'ingest:received'
   | 'ingest:scanned'
   | 'ingest:extracted'
@@ -120,4 +121,8 @@ export interface AuditRecord {
   refusalReason: string | null;
   latencyMs: number | null;
   answerHash: Buffer | null;
+  /** Per-tenant hash chain (S8): hash of the tenant's previous event. */
+  prevEventHash: Buffer | null;
+  /** Per-tenant hash chain (S8): sha256 of this event's canonical fields. */
+  eventHash: Buffer | null;
 }

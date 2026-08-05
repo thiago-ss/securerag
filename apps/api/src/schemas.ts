@@ -66,10 +66,52 @@ export const jobStatusSchema = z.object({
   updatedAt: z.string(),
 });
 
+/** Stable audit event type list (T3 + S1/S5/S8/S9 extensions). */
+export const auditEventTypeSchema = z.enum([
+  'retrieval:allowed',
+  'retrieval:denied',
+  'retrieval:refused',
+  'document:read',
+  'document:history',
+  'citation:resolved',
+  'membership:changed',
+  'group:changed',
+  'grant:changed',
+  'version:quarantined',
+  'version:review',
+  'injection:detected',
+  'retention:changed',
+  'purge:completed',
+  'purge:blocked',
+  'audit:purged',
+  'audit:exported',
+  'ingest:received',
+  'ingest:scanned',
+  'ingest:extracted',
+  'ingest:redacted',
+  'ingest:chunked',
+  'ingest:verified',
+  'ingest:published',
+  'ingest:rejected',
+]);
+export type AuditEventTypeParam = z.infer<typeof auditEventTypeSchema>;
+
 export const auditQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
+  eventType: auditEventTypeSchema.optional(),
+  /** Inclusive occurred_at lower bound (ISO-8601). */
+  from: z.string().datetime().optional(),
+  /** Inclusive occurred_at upper bound (ISO-8601). */
+  to: z.string().datetime().optional(),
+  principalId: uuidSchema.optional(),
+  /** Keyset cursor: only events with event_id < cursor (from a previous page). */
+  cursor: z.string().regex(/^\d+$/).optional(),
 });
 export type AuditQuery = z.infer<typeof auditQuerySchema>;
+
+/** Export request: the explicit tenant the principal exports (admin / security_reviewer gate in core). */
+export const auditExportQuerySchema = z.object({ tenantId: uuidSchema });
+export type AuditExportQuery = z.infer<typeof auditExportQuerySchema>;
 
 // ---------- S1 auth / admin boundaries ----------
 
@@ -241,9 +283,27 @@ export const auditRecordSchema = z.object({
   refusalReason: z.string().nullable(),
   latencyMs: z.number().nullable(),
   answerHash: z.string().nullable(),
+  prevEventHash: z.string().nullable(),
+  eventHash: z.string().nullable(),
 });
 
-export const auditListSchema = z.object({ events: z.array(auditRecordSchema) });
+export const auditListSchema = z.object({
+  events: z.array(auditRecordSchema),
+  nextCursor: z.string().nullable(),
+});
+
+/** WORM export envelope (docs/ops/audit-export.md). */
+export const auditExportResponseSchema = z.object({
+  format: z.literal('securerag-audit-export/1'),
+  tenantId: z.string(),
+  chainAnchorEventId: z.string().nullable(),
+  chainAnchorHash: z.string().nullable(),
+  eventCount: z.number(),
+  generatedAt: z.string(),
+  exporter: z.string(),
+  exportSha256: z.string(),
+  body: z.string(),
+});
 
 export const membershipRecordSchema = z.object({
   tenantId: z.string(),

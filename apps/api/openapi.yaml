@@ -2337,6 +2337,64 @@ paths:
           in: query
           name: limit
           required: false
+        - schema:
+            type: string
+            enum:
+              - retrieval:allowed
+              - retrieval:denied
+              - retrieval:refused
+              - document:read
+              - document:history
+              - citation:resolved
+              - membership:changed
+              - group:changed
+              - grant:changed
+              - version:quarantined
+              - version:review
+              - injection:detected
+              - retention:changed
+              - purge:completed
+              - purge:blocked
+              - audit:purged
+              - audit:exported
+              - ingest:received
+              - ingest:scanned
+              - ingest:extracted
+              - ingest:redacted
+              - ingest:chunked
+              - ingest:verified
+              - ingest:published
+              - ingest:rejected
+          in: query
+          name: eventType
+          required: false
+        - schema:
+            type: string
+            format: date-time
+            pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$
+          in: query
+          name: from
+          required: false
+        - schema:
+            type: string
+            format: date-time
+            pattern: ^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$
+          in: query
+          name: to
+          required: false
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: query
+          name: principalId
+          required: false
+        - schema:
+            type: string
+            pattern: ^\d+$
+          in: query
+          name: cursor
+          required: false
       responses:
         "200":
           description: Default Response
@@ -2449,6 +2507,14 @@ paths:
                           anyOf:
                             - type: string
                             - type: "null"
+                        prevEventHash:
+                          anyOf:
+                            - type: string
+                            - type: "null"
+                        eventHash:
+                          anyOf:
+                            - type: string
+                            - type: "null"
                       required:
                         - eventId
                         - tenantId
@@ -2469,11 +2535,116 @@ paths:
                         - refusalReason
                         - latencyMs
                         - answerHash
+                        - prevEventHash
+                        - eventHash
                       additionalProperties: false
+                  nextCursor:
+                    anyOf:
+                      - type: string
+                      - type: "null"
                 required:
                   - events
+                  - nextCursor
                 additionalProperties: false
         "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "500":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+  /audit/export:
+    get:
+      parameters:
+        - schema:
+            type: string
+            format: uuid
+            pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$
+          in: query
+          name: tenantId
+          required: true
+      responses:
+        "200":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  format:
+                    type: string
+                    enum:
+                      - securerag-audit-export/1
+                  tenantId:
+                    type: string
+                  chainAnchorEventId:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  chainAnchorHash:
+                    anyOf:
+                      - type: string
+                      - type: "null"
+                  eventCount:
+                    type: number
+                  generatedAt:
+                    type: string
+                  exporter:
+                    type: string
+                  exportSha256:
+                    type: string
+                  body:
+                    type: string
+                required:
+                  - format
+                  - tenantId
+                  - chainAnchorEventId
+                  - chainAnchorHash
+                  - eventCount
+                  - generatedAt
+                  - exporter
+                  - exportSha256
+                  - body
+                additionalProperties: false
+        "400":
+          description: Default Response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+                required:
+                  - code
+                  - message
+                additionalProperties: false
+        "404":
           description: Default Response
           content:
             application/json:

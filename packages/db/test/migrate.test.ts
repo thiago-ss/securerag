@@ -31,6 +31,7 @@ describe('migration runner', () => {
       '0008_injection.sql',
       '0009_retention.sql',
       '0010_history_manage_scope.sql',
+      '0011_audit_chain.sql',
     ]);
     const second = await applyMigrations(pool);
     expect(second.map((r) => r.filename)).toEqual(first.map((r) => r.filename));
@@ -85,7 +86,8 @@ describe('migration runner', () => {
         '0007_pii.sql',
         '0008_injection.sql',
         '0009_retention.sql',
-      '0010_history_manage_scope.sql',
+        '0010_history_manage_scope.sql',
+        '0011_audit_chain.sql',
       ]);
       const { rows: tenants } = await db.superuserPool.query<{ tenant_id: string }>(
         'SELECT tenant_id FROM securerag.tenants',

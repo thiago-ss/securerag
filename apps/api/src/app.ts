@@ -33,6 +33,7 @@ import {
   createGroup,
   DEFAULT_PII_CONFIG,
   deleteGroup,
+  exportAudit,
   getDocument,
   getJobStatus,
   getRetentionPolicy,
@@ -65,6 +66,8 @@ import {
 import type { AnswerGenerator } from '@securerag/providers';
 import type { OracleFacts } from '@securerag/eval/src/oracle.js';
 import {
+  auditExportQuerySchema,
+  auditExportResponseSchema,
   auditListSchema,
   auditQuerySchema,
   callbackQuerySchema,
@@ -279,6 +282,8 @@ function toAuditRecordDto(record: AuditRecord): unknown {
     refusalReason: record.refusalReason ?? null,
     latencyMs: record.latencyMs ?? null,
     answerHash: record.answerHash ? record.answerHash.toString('hex') : null,
+    prevEventHash: record.prevEventHash ? record.prevEventHash.toString('hex') : null,
+    eventHash: record.eventHash ? record.eventHash.toString('hex') : null,
   };
 }
 
@@ -1406,22 +1411,69 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
       const requestId = newRequestId();
       const identity = await withIdentityContext(pool, request.principalId, async () => undefined);
       const tenantIds = identity.memberships.map((m) => m.tenantId).sort();
+      // Filters and the keyset cursor are evaluated per tenant in SQL (RLS
+      // keeps every list tenant-isolated); event_id is a single global
+      // sequence, so the cursor is comparable across tenants after merging.
       const lists = await Promise.all(
         tenantIds.map((tenantId) =>
           listAudit(pool, {
             tenantId,
             principalId: request.principalId,
             requestId,
-            limit: query.limit,
+            // One extra row per tenant detects "more pages" for the cursor;
+            // the final page is sliced below.
+            limit: query.limit + 1,
+            ...(query.eventType !== undefined ? { eventType: query.eventType } : {}),
+            ...(query.from !== undefined ? { from: query.from } : {}),
+            ...(query.to !== undefined ? { to: query.to } : {}),
+            ...(query.principalId !== undefined ? { forPrincipalId: query.principalId } : {}),
+            ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
           }),
         ),
       );
-      const events = lists
-        .flat()
-        .sort((a, b) => b.eventId.localeCompare(a.eventId))
-        .slice(0, query.limit)
-        .map(toAuditRecordDto);
-      return { events };
+      const events = lists.flat().sort((a, b) => (BigInt(a.eventId) > BigInt(b.eventId) ? -1 : 1));
+      const dtos = events.slice(0, query.limit).map(toAuditRecordDto);
+      const nextCursor = events.length > query.limit ? (events[query.limit - 1]?.eventId ?? null) : null;
+      return { events: dtos, nextCursor };
+    },
+  );
+
+  // ---------- S8: WORM audit export (ADR-0010) ----------
+  // Tenant admins AND active 'security_reviewer' members may export; any
+  // other caller — including members, foreign principals, and nonexistent
+  // tenants — observes the same 404 (no enumeration, no gate oracle). The
+  // successful export is itself audited ('audit:exported') inside the export
+  // transaction, and every export carries a self-verifying body hash + chain
+  // anchor (docs/ops/audit-export.md).
+
+  app.get(
+    '/audit/export',
+    {
+      schema: {
+        querystring: toFastifyJsonSchema(auditExportQuerySchema),
+        response: {
+          200: toFastifyJsonSchema(auditExportResponseSchema),
+          400: toFastifyJsonSchema(problemSchema),
+          404: toFastifyJsonSchema(problemSchema),
+          500: toFastifyJsonSchema(problemSchema),
+        },
+      },
+    },
+    async (request, reply) => {
+      const query = auditExportQuerySchema.parse(request.query);
+      try {
+        const doc = await exportAudit(pool, {
+          tenantId: query.tenantId,
+          principalId: request.principalId,
+          requestId: newRequestId(),
+          exporter: request.principalId,
+        });
+        if (doc === null) return reply.code(404).send(NOT_FOUND);
+        return reply.code(200).send(doc);
+      } catch (err) {
+        if (isIndistinguishableDenial(err)) return reply.code(404).send(NOT_FOUND);
+        throw err;
+      }
     },
   );
 
