@@ -15,6 +15,13 @@ export {
   type ResolveCitationParams,
   type VersionInfo,
 } from './documents.js';
+export {
+  DEFAULT_PII_CONFIG,
+  redactBundleChunks,
+  redactForSurface,
+  redactQuestion,
+  type PiiConfig,
+} from './redaction.js';
 export { canRead, grantPredicateSql, type CanReadParams } from './grants.js';
 export {
   addGrant,

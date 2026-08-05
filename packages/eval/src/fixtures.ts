@@ -267,7 +267,7 @@ async function materializeFacts(
   const [tenants, principals, memberships, groups, groupMemberships, documents, versions, chunks, grants] =
     await Promise.all([
       pool.query(`SELECT tenant_id AS id FROM securerag.tenants ORDER BY tenant_id`),
-      pool.query(`SELECT principal_id AS id FROM securerag.principals ORDER BY principal_id`),
+      pool.query(`SELECT principal_id AS id, pii_read FROM securerag.principals ORDER BY principal_id`),
       pool.query(
         `SELECT tenant_id, principal_id, role, is_active FROM securerag.tenant_memberships ORDER BY tenant_id`,
       ),
@@ -294,7 +294,10 @@ async function materializeFacts(
 
   return {
     tenants: tenants.rows.map((r: { id: string }) => ({ id: r.id })),
-    principals: principals.rows.map((r: { id: string }) => ({ id: r.id, piiRead: false })),
+    principals: principals.rows.map((r: { id: string; pii_read: boolean }) => ({
+      id: r.id,
+      piiRead: r.pii_read,
+    })),
     memberships: memberships.rows.map(
       (r: { tenant_id: string; principal_id: string; role: string; is_active: boolean }) => ({
         tenantId: r.tenant_id,

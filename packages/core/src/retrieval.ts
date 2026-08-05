@@ -4,6 +4,7 @@ import type { AnswerGenerator } from '@securerag/providers';
 import { appendAudit, sha256 } from './audit.js';
 import { DETERMINISTIC_EMBEDDING, toVectorLiteral, type EmbeddingProvider } from './embeddings.js';
 import { grantPredicateSql } from './grants.js';
+import { DEFAULT_PII_CONFIG, redactBundleChunks, redactQuestion, type PiiConfig } from './redaction.js';
 import { decide } from './refusal.js';
 import type { AuditEvent, Citation, EvidenceChunk, RetrievalOutcome, SecurityParams } from './types.js';
 
@@ -30,6 +31,14 @@ export interface RetrievalDeps {
   clock?: () => number;
   /** SQL LIMIT; defaults to RETRIEVAL_DEFAULT_LIMIT. */
   limit?: number;
+  /**
+   * PII redaction config (ADR-0005). Defaults to the deterministic adapter
+   * with the feature enabled. The question is redacted before embedding,
+   * before the provider payload, and before audit storage; the evidence
+   * bundle is re-redacted at the retrieval boundary so model context never
+   * carries raw PII — even for `pii:read` principals.
+   */
+  pii?: PiiConfig;
 }
 
 export const RETRIEVAL_DEFAULT_LIMIT = 10;
@@ -348,6 +357,11 @@ export async function runRetrieval(
   const limit = deps.limit ?? RETRIEVAL_DEFAULT_LIMIT;
   const mode = params.mode ?? 'hybrid';
   const embeddings = deps.embeddings ?? DETERMINISTIC_EMBEDDING;
+  const pii = deps.pii ?? DEFAULT_PII_CONFIG;
+
+  // S4: the redacted question is the ONLY form that reaches embedding, the
+  // retrieval SQL, the provider payload, and audit (ADR-0005 placement 4/8).
+  const questionRedacted = redactQuestion(params.question, pii);
 
   const identity = await withIdentityContext(deps.pool, params.principalId, async () => undefined);
   if (!identity.memberships.some((m) => m.tenantId === params.tenantId)) {
@@ -356,14 +370,14 @@ export async function runRetrieval(
 
   let queryEmbedding: string | undefined;
   if (mode !== 'keyword') {
-    const [vector] = await embeddings.embed([params.question]);
+    const [vector] = await embeddings.embed([questionRedacted]);
     if (!vector) throw new Error('embedding provider returned no vector for the question');
     queryEmbedding = toVectorLiteral(vector);
   }
   const queryArgs =
     queryEmbedding === undefined
-      ? { question: params.question, limit }
-      : { question: params.question, embedding: queryEmbedding, limit };
+      ? { question: questionRedacted, limit }
+      : { question: questionRedacted, embedding: queryEmbedding, limit };
 
   return withSecurityContext(deps.pool, params, async (client, ctx) => {
     const bundle = await executeRetrievalQuery(
@@ -373,19 +387,24 @@ export async function runRetrieval(
       { efSearch: RETRIEVAL_EF_SEARCH, strictOrder: true },
     );
 
+    // S4: the evidence bundle that reaches the model is RE-redacted at the
+    // retrieval boundary — raw PII never enters provider context, even for
+    // `pii:read` principals (ADR-0005: derived data is redacted for everyone).
+    const redactedBundle = redactBundleChunks(bundle, pii);
+
     const baseAudit = {
       requestId: params.requestId,
       principalId: ctx.principalId,
       membershipId: ctx.membershipId,
       authEpoch: ctx.authEpoch,
-      redactedQuery: params.question,
-      queryHash: sha256(params.question),
-      candidateIds: bundle.map((chunk) => chunk.chunkId),
-      scores: bundle.map((chunk) => chunk.rank),
+      redactedQuery: questionRedacted,
+      queryHash: sha256(questionRedacted),
+      candidateIds: redactedBundle.map((chunk) => chunk.chunkId),
+      scores: redactedBundle.map((chunk) => chunk.rank),
       latencyMs: clock() - started,
     } satisfies Partial<AuditEvent>;
 
-    if (decide(bundle, params.question) === 'INSUFFICIENT_EVIDENCE') {
+    if (decide(redactedBundle, questionRedacted) === 'INSUFFICIENT_EVIDENCE') {
       await appendAudit({
         client,
         event: {
@@ -403,7 +422,7 @@ export async function runRetrieval(
       };
     }
 
-    const citations: Citation[] = bundle.map((chunk) => ({
+    const citations: Citation[] = redactedBundle.map((chunk) => ({
       documentId: chunk.documentId,
       versionId: chunk.versionId,
       chunkId: chunk.chunkId,
@@ -412,8 +431,8 @@ export async function runRetrieval(
     }));
 
     const generated = await deps.providers.generate({
-      question: params.question,
-      bundle: bundle.map((chunk) => ({ chunkId: chunk.chunkId, text: chunk.text })),
+      question: questionRedacted,
+      bundle: redactedBundle.map((chunk) => ({ chunkId: chunk.chunkId, text: chunk.text })),
       citations,
     });
 

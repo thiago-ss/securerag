@@ -83,8 +83,10 @@ export interface HarnessOptions {
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 // Dashed SSN and spaced card formats (matches the corpus's synthetic PII; far
-// less likely to false-positive on hex canaries than bare digit runs).
-const PII_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b\d{3}-\d{2}-\d{4}\b|\b4\d{3} \d{4} \d{4} \d{4}\b/gi;
+// less likely to false-positive on hex canaries than bare digit runs). The
+// production detector (packages/providers/src/pii.ts) aligns byte-identically
+// with this scan, so redacted payloads can never trip it.
+export const PII_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b\d{3}-\d{2}-\d{4}\b|\b4\d{3} \d{4} \d{4} \d{4}\b/gi;
 
 export async function runAdversarialHarness(
   opts: HarnessOptions,

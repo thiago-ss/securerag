@@ -88,6 +88,7 @@ const LEAKY_CANARY_TEXT =
 export async function buildCanaryCorpus(
   pool: Pool | null,
 ): Promise<CanaryWorld> {
+  const piiValues = buildPiiValues();
   const tenants: OracleTenant[] = TENANT_SPECS.map((_, i) => ({
     id: uuid('tenant', String(i)),
   }));
@@ -100,14 +101,48 @@ export async function buildCanaryCorpus(
   const canaries: CanaryWorld['canaries'] = [];
   const subjects: Record<string, string> = {};
 
-  const piiValues = {
-    email: `ops.${canaryHex('pii', 'email').slice(0, 8)}@synthetic.example`,
-    phone: `+1-555-${canaryHex('pii', 'phone').slice(0, 8)}`,
-    // Dashed SSN and spaced card formats: the harness PII regex scans these
-    // exact shapes, so they must not be bare digit runs (hex-canary ambiguity).
+/**
+ * Synthetic PII values (never published raw). Formats are chosen to EXACTLY
+ * match the v1 production detector shapes (S4, ADR-0005) and the harness PII
+ * scan: email local part regex-friendly, `+1-555-\d{8}` phone (digit-only),
+ * dashed SSN, and a spaced 4xxx card that is ALL digits and Luhn-valid (the
+ * production detector is Luhn-verified, so an invalid card would survive
+ * redaction and trip the adversarial PII scan).
+ */
+function piiHex(prefix: string, n: number): string {
+  return createHash('sha256').update(`${seed}:pii:${prefix}`).digest('hex').slice(0, n);
+}
+
+function piiDigits(prefix: string, n: number): string {
+  return piiHex(prefix, n).replace(/[a-f]/g, (c) => String(parseInt(c, 16) % 10));
+}
+
+function luhnCheckDigit(prefix: string): string {
+  // The 15-digit prefix will occupy reversed indices 1..15 in the final
+  // 16-digit array; digits at ODD full-array indices are doubled, i.e. even
+  // indices of the reversed prefix.
+  let sum = 0;
+  const digits = [...prefix].reverse();
+  for (let i = 0; i < digits.length; i += 1) {
+    let d = parseInt(digits[i] ?? '', 10);
+    if (i % 2 === 0) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return String((10 - (sum % 10)) % 10);
+}
+
+function buildPiiValues(): CanaryWorld['piiValues'] {
+  const cardPrefix = `4111 1111 1111 ${piiDigits('card', 3)}`;
+  return {
+    email: `ops.${piiHex('email', 8)}@synthetic.example`,
+    phone: `+1-555-${piiDigits('phone', 8)}`,
     ssn: '700-05-1000',
-    card: `4111 1111 1111 ${canaryHex('pii', 'card').slice(0, 4)}`,
+    card: `${cardPrefix}${luhnCheckDigit(cardPrefix.replace(/ /g, ''))}`,
   };
+}
 
   const principalRows: { id: string; provider: string; externalSubject: string; displayName: string; piiRead: boolean }[] = [];
   const membershipRows: { tenantId: string; principalId: string; role: string; isActive: boolean }[] = [];
@@ -187,7 +222,10 @@ export async function buildCanaryCorpus(
         k.kind === 'injection-doc'
           ? `Operational notes reference ${contentCanary} for injection-doc: ${INJECTIONS[i % INJECTIONS.length] ?? ''} Quarterly report figures`
           : k.kind === 'pii-doc'
-            ? `Client contact: ${piiValues.email} phone ${piiValues.phone} SSN ${piiValues.ssn} card ${piiValues.card} reference ${contentCanary}`
+            // The class words ('client contact email') are literal in the
+            // text so both the S4 authorized prompt ('client contact') and
+            // the denied probe ('client contact email') retrieve the chunk.
+            ? `Client contact email: ${piiValues.email} phone ${piiValues.phone} SSN ${piiValues.ssn} card ${piiValues.card} reference ${contentCanary}`
             : `Standard operational notes for ${k.kind} with reference ${contentCanary} and figure ${(i * 7 + k.kind.length) % 97}`;
 
       chunks.push({
@@ -195,10 +233,15 @@ export async function buildCanaryCorpus(
         text, hasPii: k.kind === 'pii-doc',
       });
       // Chunk 2 always carries the topic terms so an authorized query on the
-      // document matches >= 2 chunks (EVIDENCE_MIN_CHUNKS = 2 in core).
+      // document matches >= 2 chunks (EVIDENCE_MIN_CHUNKS = 2 in core). The
+      // pii-doc chunk 2 also carries the 'client contact' terms so an
+      // authorized (S4) member query on the PII doc answers with a redacted
+      // context (the ST pii-authorized case).
       chunks.push({
         tenantId: tid, versionId: v1Id, chunkId: uuid('chunk', `${i}-${k.kind}-c2`), chunkNo: 2,
-        text: `Operational notes reference ${contentCanary}-b supplementary for ${k.kind}`,
+        text: `Operational notes reference ${contentCanary}-b supplementary for ${k.kind}${
+          k.kind === 'pii-doc' ? ' client contact follow-up email thread' : ''
+        }`,
         hasPii: false,
       });
       if (k.kind === 'superseded-doc') {
@@ -373,13 +416,14 @@ async function seedCorpus(
   );
 
   await pool.query(
-    `INSERT INTO securerag.principals (principal_id, provider, external_subject, display_name)
-     SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::text[], $4::text[])`,
+    `INSERT INTO securerag.principals (principal_id, provider, external_subject, display_name, pii_read)
+     SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::text[], $4::text[], $5::boolean[])`,
     [
       principals.map((p) => p.id),
       principals.map((p) => p.provider),
       principals.map((p) => p.externalSubject),
       principals.map((p) => p.displayName),
+      principals.map((p) => p.piiRead),
     ],
   );
 

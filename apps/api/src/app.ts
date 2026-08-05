@@ -28,6 +28,7 @@ import {
   addGroupMember,
   addMembership,
   createGroup,
+  DEFAULT_PII_CONFIG,
   deleteGroup,
   getDocument,
   getVersion,
@@ -44,6 +45,7 @@ import {
   setMembershipRole,
   upsertPrincipal,
   type AuditRecord,
+  type PiiConfig,
 } from '@securerag/core';
 import type { AnswerGenerator } from '@securerag/providers';
 import type { OracleFacts } from '@securerag/eval/src/oracle.js';
@@ -109,6 +111,13 @@ export interface ApiDeps {
   facts?: () => OracleFacts;
   /** Injectable request-id generator; defaults to randomUUID. */
   requestId?: () => string;
+  /**
+   * PII redaction config (S4, ADR-0005). Defaults to the deterministic
+   * detector with the feature enabled: the query question is redacted before
+   * embedding/payload/audit, model context never carries raw PII (even for
+   * pii:read), and citation excerpts honor pii:read on human surfaces.
+   */
+  pii?: PiiConfig;
 }
 
 export interface OidcApiConfig {
@@ -239,6 +248,7 @@ function displayNameFromClaims(claims: { name?: unknown; preferred_username?: un
 
 export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
   const { pool, providers } = deps;
+  const pii = deps.pii ?? DEFAULT_PII_CONFIG;
   const newRequestId = deps.requestId ?? randomUUID;
   const oidcCfg = deps.oidc;
   const oidcClient = new OidcClient({
@@ -862,7 +872,7 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
       void reply.header('x-request-id', requestId);
       try {
         return await runRetrieval(
-          { pool, providers },
+          { pool, providers, pii },
           {
             tenantId: body.tenantId,
             principalId: request.principalId,
@@ -956,12 +966,16 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
       const requestId = newRequestId();
       void reply.header('x-request-id', requestId);
       const citation = await acrossTenants(pool, request.principalId, (tenantId) =>
-        resolveCitation(pool, {
-          tenantId,
-          principalId: request.principalId,
-          requestId,
-          citationId: params.citationId,
-        }),
+        resolveCitation(
+          pool,
+          {
+            tenantId,
+            principalId: request.principalId,
+            requestId,
+            citationId: params.citationId,
+          },
+          pii,
+        ),
       );
       if (citation === null) return reply.code(404).send(NOT_FOUND);
       return citation;

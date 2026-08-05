@@ -17,7 +17,7 @@ import { buildApp } from '@securerag/api/src/app.js';
 import { loginViaOidc } from '@securerag/api/src/testkit.js';
 import { buildCanaryCorpus, type CanaryWorld } from '../src/canary-corpus.js';
 import { computeAllowed } from '../src/oracle.js';
-import { runAdversarialHarness, type AttackCase, type AdversarialReport } from '../src/harness.js';
+import { runAdversarialHarness, PII_RE, type AttackCase, type AdversarialReport } from '../src/harness.js';
 
 const TENANT_COUNT = 8;
 const REPORT_DIR = 'report';
@@ -181,6 +181,40 @@ describe('ST: adversarial security-test lane (canary corpus + harness)', () => {
     expect(report.metrics.violations.filter((v) => v.includes('canary:'))).toHaveLength(0);
   });
 
+  it('S4: the pii-authorized surface answers with a REDACTED context (canonical tokens, zero raw PII)', async () => {
+    // Positive control for the new t{i}-q-pii-authorized cases: member-0
+    // (piiRead=false, pii-doc grant) may query the PII document, but the
+    // model context AND the response must carry replacement tokens — never
+    // the raw synthetic values.
+    const before = records.length;
+    const session = await loginViaOidc(base, provider, 'member-0-sub');
+    const q = await fetch(`${base}/retrieval/query`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: session.cookieHeader,
+        'x-csrf-token': session.csrfToken,
+      },
+      body: JSON.stringify({ tenantId: world.facts.tenants[0]!.id, question: 'client contact' }),
+    });
+    const body = await q.text();
+    expect(q.status).toBe(200);
+    expect(body).toContain('answered');
+
+    const payloads = records.slice(before).flatMap((r) => r.bundle);
+    expect(payloads.length).toBeGreaterThan(0);
+    const rawValues = Object.values(world.piiValues);
+    for (const payload of payloads) {
+      expect(PII_RE.test(payload.text)).toBe(false);
+      for (const raw of rawValues) expect(payload.text).not.toContain(raw);
+    }
+    const redactedText = payloads.map((p) => p.text).join('\n');
+    expect(redactedText).toContain('[EMAIL]');
+    expect(redactedText).toContain('[SSN]');
+    expect(redactedText).toContain('[CREDIT_CARD]');
+    expect(body).not.toMatch(PII_RE);
+  });
+
   it('emits sanitized reports with no raw canary values or PII', async () => {
     const json = await readFile(`${REPORT_DIR}/adversarial.json`, 'utf8');
     const md = await readFile(`${REPORT_DIR}/adversarial.md`, 'utf8');
@@ -246,6 +280,11 @@ function buildCases(world: CanaryWorld): AttackCase[] {
     if (injectionDoc) {
       cases.push({ name: `t${i}-q-injection-granted`, subject: member, tenantId: tenant.id, surface: 'query', mode: 'hybrid', prompt: PROMPTS.injectionDoc, expect: 'allowed' });
     }
+    // S4: authorized PII surface. member-i holds a read grant on pii-doc and
+    // does NOT hold pii:read, so the query MUST answer with a redacted
+    // context: the model payload carries replacement tokens, never raw PII
+    // (the harness PII scan would flag any raw value as a piiLeak).
+    cases.push({ name: `t${i}-q-pii-authorized`, subject: member, tenantId: tenant.id, surface: 'query', mode: 'hybrid', prompt: 'client contact', expect: 'allowed' });
     cases.push({ name: `t${i}-q-cross-tenant-claim`, subject: admin, tenantId: tenants[(i + 1) % TENANT_COUNT]!.id, surface: 'query', mode: 'hybrid', prompt: PROMPTS.privateDoc, expect: 'denied' });
     cases.push({ name: `t${i}-q-leaky-as-nonowner`, subject: member, tenantId: tenant.id, surface: 'query', mode: 'hybrid', prompt: PROMPTS.leaky, expect: 'denied' });
     // Injection payloads against unauthorized targets must refuse.

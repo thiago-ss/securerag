@@ -68,11 +68,11 @@ export async function seedFixtures(pool: pg.Pool): Promise<FixtureWorld> {
   if (!tenantA || !tenantB) throw new Error('fixture tenant insert failed');
 
   const principals = await pool.query<{ principal_id: string }>(
-    `INSERT INTO securerag.principals (principal_id, provider, external_subject, display_name) VALUES
-       (gen_random_uuid(), 'test-issuer', 'alice-sub', 'Alice'),
-       (gen_random_uuid(), 'test-issuer', 'bob-sub', 'Bob'),
-       (gen_random_uuid(), 'test-issuer', 'carol-sub', 'Carol'),
-       (gen_random_uuid(), 'test-issuer', 'dave-sub', 'Dave')
+    `INSERT INTO securerag.principals (principal_id, provider, external_subject, display_name, pii_read) VALUES
+       (gen_random_uuid(), 'test-issuer', 'alice-sub', 'Alice', false),
+       (gen_random_uuid(), 'test-issuer', 'bob-sub', 'Bob', false),
+       (gen_random_uuid(), 'test-issuer', 'carol-sub', 'Carol', true),
+       (gen_random_uuid(), 'test-issuer', 'dave-sub', 'Dave', false)
      RETURNING principal_id`,
   );
   const [alice, bob, carol, dave] = principals.rows;

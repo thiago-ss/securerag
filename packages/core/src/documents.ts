@@ -2,6 +2,7 @@ import type { Pool } from 'pg';
 import { withSecurityContext } from '@securerag/security';
 import { appendAudit } from './audit.js';
 import { grantPredicateSql } from './grants.js';
+import { DEFAULT_PII_CONFIG, redactForSurface, type PiiConfig } from './redaction.js';
 import type { Citation, SecurityParams } from './types.js';
 
 export interface DocumentInfo {
@@ -118,12 +119,25 @@ export interface ResolveCitationParams extends SecurityParams {
  * inside a fresh withSecurityContext (ADR-0009 epoch recheck). Foreign and
  * nonexistent citations are indistinguishable: null. A citation resolving
  * success is recorded as citation:resolved; denials write nothing.
+ *
+ * The excerpt is a HUMAN surface: principals with `pii:read` see the original
+ * text for documents they are already authorized to read; everyone else gets
+ * the redacted derivative (ADR-0005). The `pii:read` flag is read from the
+ * principal's own row inside the verified context (RLS-scoped, default deny).
  */
 export async function resolveCitation(
   pool: Pool,
   params: ResolveCitationParams,
+  pii: PiiConfig = DEFAULT_PII_CONFIG,
 ): Promise<Citation | null> {
   return withSecurityContext(pool, params, async (client, ctx) => {
+    const principal = await client.query<{ pii_read: boolean }>(
+      `SELECT pii_read
+         FROM securerag.principals
+        WHERE principal_id = securerag.ctx_principal_id()`,
+    );
+    const piiRead = principal.rows[0]?.pii_read ?? false;
+
     const { rows } = await client.query<{
       chunk_id: string;
       chunk_no: number;
@@ -165,7 +179,7 @@ export async function resolveCitation(
       versionId: row.version_id,
       chunkId: row.chunk_id,
       span: { start: row.span_start, end: row.span_end },
-      excerpt: row.text_redacted,
+      excerpt: redactForSurface(row.text_redacted, pii, piiRead),
     };
   });
 }
