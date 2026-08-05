@@ -35,7 +35,7 @@ import type { OracleFacts } from './oracle.js';
  *
  * Questions the tests use:
  *  - 'secret formula' matches every seeded chunk text; after version/RLS
- *    filtering it yields exactly the oracle-allowed chunks (alice: 3, bob: 2)
+ *    filtering it yields exactly the oracle-allowed chunks (alice: 3, bob: 3)
  *    for the bidirectional production ⊆ oracle ∧ oracle ⊆ production check.
  *  - 'widget' matches ONLY the docA2 chunk -> below EVIDENCE_MIN_CHUNKS -> a
  *    genuine below-threshold refusal with authorized evidence present.
