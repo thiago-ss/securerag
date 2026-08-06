@@ -1,7 +1,7 @@
 {
   "name": "securerag",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Production-ready multitenant enterprise knowledge platform",
   "workspaces": [
     "apps/*",
