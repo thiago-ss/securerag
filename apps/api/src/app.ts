@@ -206,6 +206,10 @@ export interface OidcApiConfig {
   acrValues?: string[];
   /** Opt-in for demo/deployment-internal issuers on plain HTTP (see OidcClientConfig). */
   allowInsecureEndpoints?: boolean;
+  /** Internal token endpoint for server-side exchanges (compose networks). */
+  internalTokenEndpoint?: string;
+  /** Internal JWKS URI override for server-side key fetches (compose networks). */
+  internalJwksUri?: string;
   httpFetch?: typeof fetch;
 }
 
@@ -384,6 +388,12 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
     ...(oidcCfg.acrValues !== undefined ? { acrValues: oidcCfg.acrValues } : {}),
     ...(oidcCfg.allowInsecureEndpoints !== undefined
       ? { allowInsecureEndpoints: oidcCfg.allowInsecureEndpoints }
+      : {}),
+    ...(oidcCfg.internalTokenEndpoint !== undefined
+      ? { internalTokenEndpoint: oidcCfg.internalTokenEndpoint }
+      : {}),
+    ...(oidcCfg.internalJwksUri !== undefined
+      ? { internalJwksUri: oidcCfg.internalJwksUri }
       : {}),
     ...(oidcCfg.httpFetch !== undefined ? { httpFetch: oidcCfg.httpFetch } : {}),
   });

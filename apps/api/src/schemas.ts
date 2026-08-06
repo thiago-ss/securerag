@@ -507,6 +507,8 @@ export const envSchema = z.object({
   OIDC_CLIENT_ID: z.string().min(1),
   OIDC_REDIRECT_URI: z.string().min(1),
   OIDC_ALLOW_INSECURE_HTTP: z.coerce.boolean().default(false),
+  OIDC_TOKEN_ENDPOINT_INTERNAL: z.string().optional(),
+  OIDC_JWKS_URI_INTERNAL: z.string().optional(),
   OIDC_POST_LOGOUT_REDIRECT_URI: z.string().optional(),
   OIDC_DISCOVERY_URL: z.string().optional(),
   /** __Host- prefix rules: Secure is REQUIRED in production (default true);

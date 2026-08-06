@@ -51,6 +51,12 @@ const app = await buildApp({
   oidc: {
     issuer: env.OIDC_ISSUER,
     allowInsecureEndpoints: env.OIDC_ALLOW_INSECURE_HTTP,
+    ...(env.OIDC_TOKEN_ENDPOINT_INTERNAL !== undefined
+      ? { internalTokenEndpoint: env.OIDC_TOKEN_ENDPOINT_INTERNAL }
+      : {}),
+    ...(env.OIDC_JWKS_URI_INTERNAL !== undefined
+      ? { internalJwksUri: env.OIDC_JWKS_URI_INTERNAL }
+      : {}),
     clientId: env.OIDC_CLIENT_ID,
     redirectUri: env.OIDC_REDIRECT_URI,
     ...(env.OIDC_POST_LOGOUT_REDIRECT_URI !== undefined

@@ -36,6 +36,15 @@ export interface OidcClientConfig {
    * NEVER enabled for internet-facing issuers.
    */
   allowInsecureEndpoints?: boolean;
+  /**
+   * Deployment-internal token endpoint override: discovery advertises the
+   * BROWSER-facing (public) token endpoint while server-side exchanges run
+   * against this internal URL (compose networks). Default: use the metadata
+   * endpoint as-is.
+   */
+  internalTokenEndpoint?: string;
+  /** Deployment-internal JWKS URI override (see internalTokenEndpoint). */
+  internalJwksUri?: string;
   /** When set, auth_time must be present and no older than this, seconds. */
   maxAgeSeconds?: number;
   /** When set, the acr claim must be one of these values. */
@@ -418,9 +427,10 @@ export class OidcClient {
 
   private async fetchJwks(): Promise<Jwk[]> {
     const metadata = await this.discover();
+    const jwksUri = this.config.internalJwksUri ?? metadata.jwks_uri;
     let response: Response;
     try {
-      response = await this.fetchImpl()(metadata.jwks_uri);
+      response = await this.fetchImpl()(jwksUri);
     } catch {
       throw new OidcProviderError();
     }
@@ -482,7 +492,8 @@ export class OidcClient {
     const metadata = await this.discover();
     let response: Response;
     try {
-      response = await this.fetchImpl()(metadata.token_endpoint, {
+      const tokenEndpoint = this.config.internalTokenEndpoint ?? metadata.token_endpoint;
+      response = await this.fetchImpl()(tokenEndpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
