@@ -38,8 +38,9 @@ const base: OracleFacts = {
   ],
   grants: [
     { tenantId: T, documentId: DOC_ACTIVE, subjectType: 'principal', subjectId: A, capability: 'read', revoked: false },
-    { tenantId: T, documentId: DOC_DELETED, subjectType: 'principal', subjectId: A, capability: 'read', revoked: false },
+    { tenantId: T, documentId: DOC_DELETED, subjectType: 'principal', subjectId: M, capability: 'read', revoked: true },
   ],
+  jobs: [],
 };
 
 describe('oracle semantics (ST extensions)', () => {

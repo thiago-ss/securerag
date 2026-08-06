@@ -77,6 +77,13 @@ export interface OracleGrant {
   capability: string;
   /** Row was inserted then revoked (deleted) at seed time. */
   revoked: boolean;
+  /** Deterministic grant_id (G4: lets the suite remove/re-add a known grant). */
+  grantId?: string;
+}
+
+export interface OracleJob {
+  tenantId: string;
+  jobId: string;
 }
 
 export interface OracleFacts {
@@ -89,6 +96,8 @@ export interface OracleFacts {
   versions: OracleVersion[];
   chunks: OracleChunk[];
   grants: OracleGrant[];
+  /** Seeded opaque job rows (own-tenant visibility only). */
+  jobs: OracleJob[];
 }
 
 export interface AllowedSets {

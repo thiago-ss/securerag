@@ -18,6 +18,7 @@ import type {
   OracleGrant,
   OracleGroup,
   OracleGroupMembership,
+  OracleJob,
   OracleTenant,
   OracleVersion,
 } from './oracle.js';
@@ -35,6 +36,14 @@ export interface CanaryWorld {
   piiValues: { email: string; phone: string; ssn: string; card: string };
   /** Near-identical cross-tenant pair (unauthorized copy must rank first). */
   nearIdentical: { aTenantId: string; bTenantId: string; text: string };
+  /**
+   * Deterministic ACL-churn targets (G4): one document granted to the tenant's
+   * ghost principal with a KNOWN grant id (the suite removes and re-adds it,
+   * net-zero) and one group with a KNOWN group id (the suite adds/removes a
+   * ghost member, then deletes it — net-zero). Never referenced by any other
+   * case, so the writes change nothing the suite depends on.
+   */
+  aclChurn: { tenantId: string; documentId: string; grantId: string; groupId: string }[];
 }
 
 interface TenantSpec {
@@ -98,8 +107,10 @@ export async function buildCanaryCorpus(
   const versions: OracleVersion[] = [];
   const chunks: OracleChunk[] = [];
   const grants: OracleGrant[] = [];
+  const jobs: OracleJob[] = [];
   const canaries: CanaryWorld['canaries'] = [];
   const subjects: Record<string, string> = {};
+  const aclChurn: CanaryWorld['aclChurn'] = [];
 
 /**
  * Synthetic PII values (never published raw). Formats are chosen to EXACTLY
@@ -151,20 +162,32 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
     const tid = tenants[i]!.id;
     const adminId = uuid('principal', `admin-${i}`);
     const memberId = uuid('principal', `member-${i}`);
+    const piiReaderId = uuid('principal', `pii-reader-${i}`);
+    const ghostId = uuid('principal', `ghost-${i}`);
     principalRows.push(
       { id: adminId, provider: 'test-issuer', externalSubject: `admin-${i}-sub`, displayName: `Admin ${i}`, piiRead: true },
       { id: memberId, provider: 'test-issuer', externalSubject: `member-${i}-sub`, displayName: `Member ${i}`, piiRead: false },
+      { id: piiReaderId, provider: 'test-issuer', externalSubject: `pii-reader-${i}-sub`, displayName: `PII Reader ${i}`, piiRead: true },
+      // G4: a principal with NO membership anywhere (session exists, scope is
+      // empty) — every probe must be denied/refused.
+      { id: ghostId, provider: 'test-issuer', externalSubject: `ghost-${i}-sub`, displayName: `Ghost ${i}`, piiRead: false },
     );
     membershipRows.push(
       { tenantId: tid, principalId: adminId, role: 'admin', isActive: true },
       { tenantId: tid, principalId: memberId, role: 'member', isActive: true },
+      { tenantId: tid, principalId: piiReaderId, role: 'member', isActive: true },
     );
     subjects[`admin-${i}-sub`] = `admin-${i}-sub`;
     subjects[`member-${i}-sub`] = `member-${i}-sub`;
+    subjects[`pii-reader-${i}-sub`] = `pii-reader-${i}-sub`;
+    subjects[`ghost-${i}-sub`] = `ghost-${i}-sub`;
 
     const groupId = uuid('group', String(i));
     groups.push({ tenantId: tid, groupId });
     groupMemberships.push({ tenantId: tid, groupId, principalId: memberId });
+
+    // G4: one opaque job row per tenant (own-tenant status probe target).
+    jobs.push({ tenantId: tid, jobId: uuid('job', String(i)) });
 
     // Document kinds per tenant (deterministic; ids derived from tenant index).
     const kinds: { kind: string; grantTo: 'admin' | 'member' | 'group' | 'role' | 'revoked' | 'none'; status: string; retentionExpired: boolean }[] = [
@@ -179,6 +202,7 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
       { kind: 'retained-expired', grantTo: 'admin', status: 'active', retentionExpired: true },
       { kind: 'injection-doc', grantTo: 'member', status: 'active', retentionExpired: false },
       { kind: 'pii-doc', grantTo: 'member', status: 'active', retentionExpired: false },
+      { kind: 'conflict-doc', grantTo: 'admin', status: 'active', retentionExpired: false },
     ];
 
     for (const k of kinds) {
@@ -227,7 +251,13 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
             // text so both the S4 authorized prompt ('client contact') and
             // the denied probe ('client contact email') retrieve the chunk.
             ? `Client contact email: ${piiValues.email} phone ${piiValues.phone} SSN ${piiValues.ssn} card ${piiValues.card} reference ${contentCanary}`
-            : `Standard operational notes for ${k.kind} with reference ${contentCanary} and figure ${(i * 7 + k.kind.length) % 97}`;
+            : k.kind === 'conflict-doc'
+              // G4: same-entity numeric disagreement between the two chunks
+              // (ADR-0009 detector: entity 'q3 quorum threshold', connector
+              // 'was', unit class percent). An authorized query retrieving
+              // both chunks MUST refuse with CONFLICTING_EVIDENCE.
+              ? `Q3 quorum threshold was 45% for the advisory board review meeting reference ${contentCanary}`
+              : `Standard operational notes for ${k.kind} with reference ${contentCanary} and figure ${(i * 7 + k.kind.length) % 97}`;
 
       chunks.push({
         tenantId: tid, versionId: v1Id, chunkId: uuid('chunk', `${i}-${k.kind}-c1`), chunkNo: 1,
@@ -240,9 +270,11 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
       // context (the ST pii-authorized case).
       chunks.push({
         tenantId: tid, versionId: v1Id, chunkId: uuid('chunk', `${i}-${k.kind}-c2`), chunkNo: 2,
-        text: `Operational notes reference ${contentCanary}-b supplementary for ${k.kind}${
-          k.kind === 'pii-doc' ? ' client contact follow-up email thread' : ''
-        }`,
+        text: k.kind === 'conflict-doc'
+          ? `Q3 quorum threshold was 60% for the advisory board review meeting reference ${contentCanary}-b`
+          : `Operational notes reference ${contentCanary}-b supplementary for ${k.kind}${
+              k.kind === 'pii-doc' ? ' client contact follow-up email thread' : ''
+            }`,
         hasPii: false,
       });
       if (k.kind === 'superseded-doc') {
@@ -272,7 +304,32 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
           capability: 'read', revoked: true,
         });
       }
+      if (k.kind === 'pii-doc') {
+        // G4: a pii:read principal WITH a grant on the PII doc — the query
+        // path must still answer with a fully redacted model context
+        // (ADR-0005 redacts derived data for everyone, always).
+        grants.push({
+          tenantId: tid, documentId: docId, subjectType: 'principal', subjectId: piiReaderId,
+          capability: 'read', revoked: false,
+        });
+      }
     }
+
+    // G4 ACL-churn targets (deterministic ids; nothing else references them):
+    // a document granted to the ghost principal with a KNOWN grant id, and a
+    // group with a KNOWN group id. The suite's admin positive controls
+    // remove/re-add the grant and add/remove/delete the group — net-zero, and
+    // invisible to every other case.
+    const churnDocId = uuid('document', `acl-churn-${i}`);
+    const churnGrantId = uuid('grant', `acl-churn-${i}`);
+    const churnGroupId = uuid('group', `acl-churn-${i}`);
+    documents.push({ tenantId: tid, documentId: churnDocId, title: `ACL churn doc of tenant ${i}`, status: 'active' });
+    grants.push({
+      tenantId: tid, documentId: churnDocId, subjectType: 'principal', subjectId: ghostId,
+      capability: 'read', revoked: false, grantId: churnGrantId,
+    });
+    groups.push({ tenantId: tid, groupId: churnGroupId });
+    aclChurn.push({ tenantId: tid, documentId: churnDocId, grantId: churnGrantId, groupId: churnGroupId });
   }
 
   // Colliding external identities: the same external_subject under two providers.
@@ -357,6 +414,13 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
   canaries.push({ tenantId: tenants[0]!.id, documentId: leakyDoc, versionId: leakyVer, value: leakyCanary, kind: 'content' });
   canaries.push({ tenantId: tenants[0]!.id, documentId: leakyDoc, versionId: leakyVer, value: canaryHex('leaky', 'b'), kind: 'content' });
 
+  // Deterministic grant ids for every grant (the PK is (tenant_id, grant_id);
+  // G4's acl-churn grant already carries a known id, the rest get fixed ids).
+  let grantSeq = 0;
+  for (const g of grants) {
+    if (g.grantId === undefined) g.grantId = uuid('grant', `auto-${grantSeq++}`);
+  }
+
   const facts: OracleFacts = {
     tenants,
     principals: principalRows.map((p) => ({ id: p.id, piiRead: p.piiRead })),
@@ -372,10 +436,11 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
     versions,
     chunks,
     grants,
+    jobs,
   };
 
   if (pool !== null) {
-    await seedCorpus(pool, principalRows, membershipRows, groups, groupMemberships, documents, versions, chunks, grants);
+    await seedCorpus(pool, principalRows, membershipRows, groups, groupMemberships, documents, versions, chunks, grants, jobs);
   }
 
   return {
@@ -390,6 +455,7 @@ function buildPiiValues(): CanaryWorld['piiValues'] {
     leakyChunk: { tenantId: tenants[0]!.id, chunkId: leakyChunkId, canary: leakyCanary },
     piiValues,
     nearIdentical: { aTenantId: tenants[0]!.id, bTenantId: tenants[1]!.id, text: nearTextA },
+    aclChurn,
   };
 }
 
@@ -403,6 +469,7 @@ async function seedCorpus(
   versions: OracleVersion[],
   chunks: OracleChunk[],
   grants: OracleGrant[],
+  jobs: OracleJob[],
 ): Promise<void> {
   const tenantIdsSet = new Set<string>([
     ...groups.map((g) => g.tenantId),
@@ -511,14 +578,29 @@ async function seedCorpus(
 
   const liveGrants = grants.filter((g) => !g.revoked);
   await pool.query(
-    `INSERT INTO securerag.document_grants (tenant_id, document_id, subject_type, subject_id, capability)
-     SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::text[])`,
+    `INSERT INTO securerag.document_grants (tenant_id, document_id, grant_id, subject_type, subject_id, capability)
+     SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::uuid[], $4::text[], $5::text[], $6::text[])
+     ON CONFLICT DO NOTHING`,
     [
       liveGrants.map((g) => g.tenantId),
       liveGrants.map((g) => g.documentId),
+      liveGrants.map((g) => g.grantId as string),
       liveGrants.map((g) => g.subjectType),
       liveGrants.map((g) => g.subjectId),
       liveGrants.map((g) => g.capability),
+    ],
+  );
+
+  await pool.query(
+    `INSERT INTO securerag.jobs (tenant_id, job_id, idempotency_key, job_type, status)
+     SELECT * FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::text[])
+     ON CONFLICT DO NOTHING`,
+    [
+      jobs.map((j) => j.tenantId),
+      jobs.map((j) => j.jobId),
+      jobs.map((j) => `seed/${j.jobId}`),
+      jobs.map(() => 'ingest'),
+      jobs.map(() => 'succeeded'),
     ],
   );
 }

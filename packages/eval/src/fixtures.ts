@@ -385,5 +385,6 @@ async function materializeFacts(
         revoked: true,
       },
     ],
+    jobs: [],
   };
 }

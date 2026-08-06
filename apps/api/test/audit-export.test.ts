@@ -46,7 +46,7 @@ describe('S8 audit export + filtered retrieval over HTTP with OIDC sessions', ()
       pool: db.apiPool,
       providers: new SpyGenerator(records),
       store: new InMemorySourceObjectStore(),
-      facts: () => ({ tenants: [], principals: [], memberships: [], groups: [], groupMemberships: [], documents: [], versions: [], chunks: [], grants: [] }),
+      facts: () => ({ tenants: [], principals: [], memberships: [], groups: [], groupMemberships: [], documents: [], versions: [], chunks: [], grants: [], jobs: [] }),
       oidc: {
         issuer: 'test-issuer',
         clientId: 'securerag-api',
