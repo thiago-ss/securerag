@@ -55,7 +55,6 @@
       ]
     }
   ],
-  "idTokenSignedResponseAlg": "RS256",
   "idTokenEncryptionAlgValuesSupported": [],
   "users": [
     {
