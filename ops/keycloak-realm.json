@@ -19,15 +19,15 @@
         "http://localhost:8080/api/auth/callback",
         "http://localhost:3000/auth/callback"
       ],
-      "webOrigins": ["http://localhost:8080", "http://localhost:3000"],
-      "postLogoutRedirectUris": [
-        "http://localhost:8080/",
-        "http://localhost:3000/"
+      "webOrigins": [
+        "http://localhost:8080",
+        "http://localhost:3000"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "pkce.not.confidential": "false",
-        "backchannel.logout.session.required": "false"
+        "backchannel.logout.session.required": "false",
+        "post.logout.redirect.uris": "http://localhost:8080/##http://localhost:3000/"
       },
       "protocolMappers": [
         {
@@ -66,7 +66,11 @@
       "email": "alice@securerag.example",
       "firstName": "Alice",
       "credentials": [
-        { "type": "password", "value": "alice-demo-password", "temporary": false }
+        {
+          "type": "password",
+          "value": "alice-demo-password",
+          "temporary": false
+        }
       ]
     },
     {
@@ -77,7 +81,11 @@
       "email": "carol@securerag.example",
       "firstName": "Carol",
       "credentials": [
-        { "type": "password", "value": "carol-demo-password", "temporary": false }
+        {
+          "type": "password",
+          "value": "carol-demo-password",
+          "temporary": false
+        }
       ]
     }
   ]
