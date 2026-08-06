@@ -76,3 +76,4 @@ Thumbs.db
 # ---- OpenCode / agent scratch (never commit agent scratch logs) ----
 .opencode/
 .claude/
+ops/compose.override.yml

@@ -21,7 +21,7 @@ services:
       SECURERAG_PURGE_PASSWORD: ${SECURERAG_PURGE_PASSWORD:?set in ops/.env}
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set in ops/.env}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql
       - ./postgres/init-db.sh:/docker-entrypoint-initdb.d/001-init.sh:ro
       - ../packages/db/migrations/bootstrap/0001_roles_and_extensions.sql:/bootstrap/0001_roles_and_extensions.sql:ro
     ports:
