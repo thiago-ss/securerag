@@ -179,3 +179,9 @@ export async function main(): Promise<void> {
   console.log('worker daemon stopping');
   await Promise.allSettled([deps.workerPool.end(), deps.purgePool.end()]);
 }
+
+main().catch((err: unknown) => {
+  // eslint-disable-next-line no-console
+  console.error(`worker daemon failed: ${String(err)}`);
+  process.exitCode = 1;
+});

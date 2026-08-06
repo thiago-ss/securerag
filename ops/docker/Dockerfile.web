@@ -21,9 +21,13 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/web ./apps/web
 COPY --from=build /app/package.json ./package.json
 
+# vite preview writes .vite-temp under the app dir; give the runtime user
+# write access to the copied app tree.
+RUN chown -R node:node /app/apps/web
+
 ENV NODE_ENV=production
 USER node
 
 EXPOSE 4173
 
-CMD ["npx", "vite", "preview", "--root", "/app/apps/web", "--host", "0.0.0.0", "--port", "4173"]
+CMD ["npx", "vite", "preview", "/app/apps/web", "--host", "0.0.0.0", "--port", "4173"]
