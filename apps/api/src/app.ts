@@ -463,6 +463,8 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
       return reply.code(err.statusCode).send(INVALID_REQUEST);
     }
     request.log.error({ err }, 'unhandled error');
+    // eslint-disable-next-line no-console
+    console.error('unhandled error:', err);
     return reply.code(500).send(INTERNAL_ERROR);
   });
 

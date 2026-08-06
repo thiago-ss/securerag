@@ -15,6 +15,22 @@
 		reverse_proxy api:3000
 	}
 
+	handle /realms/* {
+		reverse_proxy keycloak:8080 {
+			header_up Host {$PROXY_HOST}
+			header_up X-Forwarded-Host {$PROXY_HOST}
+			header_up X-Forwarded-Port {$PROXY_PORT}
+		}
+	}
+
+	handle /protocol/* {
+		reverse_proxy keycloak:8080 {
+			header_up Host {$PROXY_HOST}
+			header_up X-Forwarded-Host {$PROXY_HOST}
+			header_up X-Forwarded-Port {$PROXY_PORT}
+		}
+	}
+
 
 	handle {
 		reverse_proxy web:4173
