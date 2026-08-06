@@ -165,7 +165,7 @@ async function main(): Promise<void> {
         `INSERT INTO securerag.document_versions
            (tenant_id, document_id, version_id, version_no, source_object_key, content_hash, status, is_current)
          VALUES ($1, $2, $3, 1, $4, decode($5, 'hex'), 'valid', true)
-         ON CONFLICT (tenant_id, document_id, version_id) DO NOTHING
+         ON CONFLICT (tenant_id, document_id, version_no) DO NOTHING
          RETURNING version_id`,
         [doc.tenantId, doc.documentId, versionId, `demo/${doc.documentId}/${hash}.txt`, hash],
       );
