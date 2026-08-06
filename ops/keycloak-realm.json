@@ -3,7 +3,7 @@
   "realm": "securerag",
   "displayName": "SecureRAG Demo",
   "enabled": true,
-  "sslRequired": "external",
+  "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": false,
   "users": [
@@ -15,7 +15,13 @@
       "firstName": "Alice",
       "lastName": "Demo",
       "email": "alice@securerag.example",
-      "credentials": [{ "type": "password", "value": "alice-demo-password", "temporary": false }]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice-demo-password",
+          "temporary": false
+        }
+      ]
     },
     {
       "id": "00000000-0000-4000-8000-000000000002",
@@ -25,7 +31,13 @@
       "firstName": "Carol",
       "lastName": "Demo",
       "email": "carol@securerag.example",
-      "credentials": [{ "type": "password", "value": "carol-demo-password", "temporary": false }]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "carol-demo-password",
+          "temporary": false
+        }
+      ]
     }
   ],
   "clients": [
@@ -38,8 +50,14 @@
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
-      "redirectUris": ["http://localhost:8080/api/auth/callback", "http://localhost:3000/auth/callback"],
-      "webOrigins": ["http://localhost:8080", "http://localhost:3000"],
+      "redirectUris": [
+        "http://localhost:8080/api/auth/callback",
+        "http://localhost:3000/auth/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:8080",
+        "http://localhost:3000"
+      ],
       "attributes": {
         "post.logout.redirect.uris": "http://localhost:8080/##http://localhost:3000/"
       }
