@@ -50,6 +50,7 @@ const app = await buildApp({
   store,
   oidc: {
     issuer: env.OIDC_ISSUER,
+    allowInsecureEndpoints: env.OIDC_ALLOW_INSECURE_HTTP,
     clientId: env.OIDC_CLIENT_ID,
     redirectUri: env.OIDC_REDIRECT_URI,
     ...(env.OIDC_POST_LOGOUT_REDIRECT_URI !== undefined

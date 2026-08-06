@@ -204,6 +204,8 @@ export interface OidcApiConfig {
   postLogoutRedirectPath?: string;
   maxAgeSeconds?: number;
   acrValues?: string[];
+  /** Opt-in for demo/deployment-internal issuers on plain HTTP (see OidcClientConfig). */
+  allowInsecureEndpoints?: boolean;
   httpFetch?: typeof fetch;
 }
 
@@ -380,6 +382,9 @@ export async function buildApp(deps: ApiDeps): Promise<FastifyInstance> {
     ...(oidcCfg.discoveryUrl !== undefined ? { discoveryUrl: oidcCfg.discoveryUrl } : {}),
     ...(oidcCfg.maxAgeSeconds !== undefined ? { maxAgeSeconds: oidcCfg.maxAgeSeconds } : {}),
     ...(oidcCfg.acrValues !== undefined ? { acrValues: oidcCfg.acrValues } : {}),
+    ...(oidcCfg.allowInsecureEndpoints !== undefined
+      ? { allowInsecureEndpoints: oidcCfg.allowInsecureEndpoints }
+      : {}),
     ...(oidcCfg.httpFetch !== undefined ? { httpFetch: oidcCfg.httpFetch } : {}),
   });
   const loginStore = new InMemoryLoginStore();

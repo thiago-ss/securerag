@@ -29,6 +29,13 @@ export interface OidcClientConfig {
   clockSkewSeconds?: number;
   /** Reject tokens whose iat is older than this, seconds (default 300). */
   maxIatSkewSeconds?: number;
+  /**
+   * Demo/deployment-internal issuers (e.g. Keycloak behind a compose network)
+   * legitimately serve plain HTTP on a non-loopback host. Default false
+   * (secure): discovery endpoints must be https, or http on loopback.
+   * NEVER enabled for internet-facing issuers.
+   */
+  allowInsecureEndpoints?: boolean;
   /** When set, auth_time must be present and no older than this, seconds. */
   maxAgeSeconds?: number;
   /** When set, the acr claim must be one of these values. */
@@ -118,7 +125,11 @@ function safeHostname(url: string): string | null {
 
 /** Discovery endpoints must be https and on the issuer's host; loopback http is
  * permitted for local/demo issuers (Keycloak/fake provider). */
-function assertSafeEndpoint(endpoint: string, issuerHost: string | null): void {
+function assertSafeEndpoint(
+  endpoint: string,
+  issuerHost: string | null,
+  allowInsecure: boolean,
+): void {
   let parsed: URL;
   try {
     parsed = new URL(endpoint);
@@ -127,7 +138,8 @@ function assertSafeEndpoint(endpoint: string, issuerHost: string | null): void {
   }
   const host = parsed.hostname.toLowerCase();
   const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
-  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
+  const httpOk = allowInsecure || loopback;
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && httpOk)) {
     throw new OidcProviderError();
   }
   if (issuerHost !== null && host !== issuerHost && !(loopback && issuerHost === 'localhost')) {
@@ -379,8 +391,9 @@ export class OidcClient {
       doc.jwks_uri,
       ...(doc.end_session_endpoint !== undefined ? [doc.end_session_endpoint] : []),
     ] as string[];
+    const allowInsecure = this.config.allowInsecureEndpoints === true;
     for (const endpoint of endpoints) {
-      assertSafeEndpoint(endpoint, issuerHost);
+      assertSafeEndpoint(endpoint, issuerHost, allowInsecure);
     }
     return {
       issuer: doc.issuer,
