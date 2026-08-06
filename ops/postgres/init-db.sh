@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # SecureRAG demo DB bootstrap (runs once via docker-entrypoint-initdb.d):
 # 1. create the runtime roles + extensions (the committed bootstrap migration),
 # 2. assign demo passwords to the runtime roles (never stored in SQL),
