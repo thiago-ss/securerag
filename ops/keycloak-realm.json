@@ -52,14 +52,16 @@
       "directAccessGrantsEnabled": false,
       "redirectUris": [
         "http://localhost:8080/api/auth/callback",
-        "http://localhost:3000/auth/callback"
+        "http://localhost:3000/auth/callback",
+        "http://localhost:18080/api/auth/callback"
       ],
       "webOrigins": [
         "http://localhost:8080",
-        "http://localhost:3000"
+        "http://localhost:3000",
+        "http://localhost:18080"
       ],
       "attributes": {
-        "post.logout.redirect.uris": "http://localhost:8080/##http://localhost:3000/"
+        "post.logout.redirect.uris": "http://localhost:8080/##http://localhost:18080/##http://localhost:3000/"
       }
     }
   ]
